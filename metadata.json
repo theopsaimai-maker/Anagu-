@@ -1,0 +1,6 @@
+{
+  "name": "Anagu — Land Administration Figma Design Studio",
+  "description": "Comprehensive Figma design workspace, design system, and interactive prototype for Anagu enterprise blockchain GIS land administration and statutory title governance.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
