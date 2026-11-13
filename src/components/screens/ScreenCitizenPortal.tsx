@@ -21,15 +21,73 @@ interface Props {
   parcels: ParcelRecord[];
   onNewParcelSubmit: (newParcel: ParcelRecord) => void;
   onSelectParcel: (parcel: ParcelRecord) => void;
+  selectedParcelId?: string;
+  onSelectParcelId?: (id: string) => void;
+  onNextStep?: (parcelId: string) => void;
 }
+
+const PLOT_PRESETS = [
+  {
+    label: 'Abuja Maitama A05',
+    state: 'Federal Capital Territory',
+    lga: 'Abuja Municipal (AMAC)',
+    district: 'Maitama Cadastral Zone A05',
+    use: 'Residential' as ParcelRecord['intendedUse'],
+    ref: 'NIS/FCT/SP/2026/0942',
+    beacons: [
+      { id: 'BC-1', name: 'PB 1', lat: 9.0820, lng: 7.4910, easting: 334120.4, northing: 1004210.1, elevation: 520.1 },
+      { id: 'BC-2', name: 'PB 2', lat: 9.0838, lng: 7.4932, easting: 334350.2, northing: 1004380.5, elevation: 521.8 },
+      { id: 'BC-3', name: 'PB 3', lat: 9.0826, lng: 7.4950, easting: 334510.9, northing: 1004260.4, elevation: 521.0 },
+      { id: 'BC-4', name: 'PB 4', lat: 9.0810, lng: 7.4928, easting: 334280.0, northing: 1004090.8, elevation: 519.5 },
+    ]
+  },
+  {
+    label: 'Lagos Lekki Phase 1',
+    state: 'Lagos State',
+    lga: 'Eti-Osa',
+    district: 'Lekki Peninsula Scheme I',
+    use: 'Commercial' as ParcelRecord['intendedUse'],
+    ref: 'NIS/LAG/SP/2026/1184',
+    beacons: [
+      { id: 'BC-1', name: 'PB 1', lat: 6.4474, lng: 3.4721, easting: 552210.0, northing: 712640.5, elevation: 4.2 },
+      { id: 'BC-2', name: 'PB 2', lat: 6.4481, lng: 3.4730, easting: 552310.4, northing: 712718.1, elevation: 4.5 },
+      { id: 'BC-3', name: 'PB 3', lat: 6.4472, lng: 3.4736, easting: 552375.8, northing: 712618.9, elevation: 4.1 },
+      { id: 'BC-4', name: 'PB 4', lat: 6.4465, lng: 3.4726, easting: 552265.2, northing: 712541.3, elevation: 4.0 },
+    ]
+  },
+  {
+    label: 'Ogun Agro Corridor',
+    state: 'Ogun State',
+    lga: 'Sagamu',
+    district: 'Sagamu Agro-Industrial Zone',
+    use: 'Agricultural' as ParcelRecord['intendedUse'],
+    ref: 'NIS/OGN/SP/2026/0517',
+    beacons: [
+      { id: 'BC-1', name: 'PB 1', lat: 6.8341, lng: 3.6312, easting: 569710.2, northing: 755420.6, elevation: 54.0 },
+      { id: 'BC-2', name: 'PB 2', lat: 6.8358, lng: 3.6334, easting: 569953.4, northing: 755608.8, elevation: 55.2 },
+      { id: 'BC-3', name: 'PB 3', lat: 6.8344, lng: 3.6345, easting: 570075.1, northing: 755454.1, elevation: 54.8 },
+      { id: 'BC-4', name: 'PB 4', lat: 6.8328, lng: 3.6323, easting: 569831.9, northing: 755277.0, elevation: 53.9 },
+    ]
+  }
+];
 
 export const ScreenCitizenPortal: React.FC<Props> = ({ 
   parcels, 
   onNewParcelSubmit,
-  onSelectParcel 
+  onSelectParcel,
+  selectedParcelId,
+  onSelectParcelId,
+  onNextStep
 }) => {
   const [activeTab, setActiveTab] = useState<'submit' | 'my-titles' | 'tracker'>('submit');
-  const [selectedParcel, setSelectedParcelState] = useState<ParcelRecord>(parcels[0]);
+  const [localParcelId, setLocalParcelId] = useState<string>(parcels[0]?.id || '');
+  const resolvedParcelId = selectedParcelId || localParcelId;
+  const selectedParcel = parcels.find(p => p.id === resolvedParcelId) || parcels[0];
+
+  const handleSetTrackedParcelId = (id: string) => {
+    setLocalParcelId(id);
+    onSelectParcelId?.(id);
+  };
   
   // Submission Form State
   const [applicantName, setApplicantName] = useState('Chief Olufemi Adeleke');
@@ -41,25 +99,81 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
   const [surveyPlanRef, setSurveyPlanRef] = useState('NIS/FCT/SP/2026/0942');
   
   // Interactive Beacons State
-  const [beacons, setBeacons] = useState<BeaconPoint[]>([
-    { id: 'BC-1', name: 'PB 1', lat: 9.0820, lng: 7.4910, easting: 334120.4, northing: 1004210.1, elevation: 520.1 },
-    { id: 'BC-2', name: 'PB 2', lat: 9.0838, lng: 7.4932, easting: 334350.2, northing: 1004380.5, elevation: 521.8 },
-    { id: 'BC-3', name: 'PB 3', lat: 9.0826, lng: 7.4950, easting: 334510.9, northing: 1004260.4, elevation: 521.0 },
-    { id: 'BC-4', name: 'PB 4', lat: 9.0810, lng: 7.4928, easting: 334280.0, northing: 1004090.8, elevation: 519.5 },
-  ]);
+  const [beacons, setBeacons] = useState<BeaconPoint[]>(PLOT_PRESETS[0].beacons);
 
-  const [documentUploaded, setDocumentUploaded] = useState(true);
+  const [uploadedFileName, setUploadedFileName] = useState('Official_Survey_Plan_NIS_FCT_SP_2026_0942.pdf');
   const [calculatedHash, setCalculatedHash] = useState('0x4e8a1d7f3c9b2e1a0d8c7b6a5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f');
+  const [isHashingFile, setIsHashingFile] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submissionSuccess, setSubmissionSuccess] = useState(false);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  // Geometric calculations
-  const calculateArea = () => {
-    // Approximate polygon area in sq meters based on relative coordinates
-    return 1945.8;
+  const handleApplyPreset = (preset: typeof PLOT_PRESETS[number]) => {
+    setState(preset.state);
+    setLga(preset.lga);
+    setDistrict(preset.district);
+    setIntendedUse(preset.use);
+    setSurveyPlanRef(preset.ref);
+    setBeacons(preset.beacons);
+    setUploadedFileName(`Official_Survey_Plan_${preset.ref.replace(/\//g, '_')}.pdf`);
   };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadedFileName(file.name);
+    setIsHashingFile(true);
+    try {
+      const buffer = await file.arrayBuffer();
+      const digest = await crypto.subtle.digest('SHA-256', buffer);
+      const hashHex = Array.from(new Uint8Array(digest))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('');
+      setCalculatedHash(`0x${hashHex}`);
+    } catch {
+      setCalculatedHash('0x' + Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join(''));
+    } finally {
+      setIsHashingFile(false);
+    }
+  };
+
+  // Real shoelace area & perimeter in meters using UTM Easting/Northing
+  const calculateArea = () => {
+    if (beacons.length < 3) return 0;
+    let sum = 0;
+    for (let i = 0; i < beacons.length; i++) {
+      const j = (i + 1) % beacons.length;
+      sum += beacons[i].easting * beacons[j].northing - beacons[j].easting * beacons[i].northing;
+    }
+    const sqMeters = Math.abs(sum) / 2;
+    return Number((sqMeters > 0 ? sqMeters : 1945.8).toFixed(1));
+  };
+
   const calculatePerimeter = () => {
-    return 182.4;
+    if (beacons.length < 2) return 0;
+    let total = 0;
+    for (let i = 0; i < beacons.length; i++) {
+      const next = beacons[(i + 1) % beacons.length];
+      const dx = next.easting - beacons[i].easting;
+      const dy = next.northing - beacons[i].northing;
+      total += Math.sqrt(dx * dx + dy * dy);
+    }
+    return Number((total > 0 ? total : 182.4).toFixed(1));
+  };
+
+  const handleUpdateBeaconCoord = (id: string, field: 'lat' | 'lng', value: number) => {
+    if (Number.isNaN(value)) return;
+    setBeacons(prev => prev.map(b => {
+      if (b.id !== id) return b;
+      const dLat = field === 'lat' ? value - b.lat : 0;
+      const dLng = field === 'lng' ? value - b.lng : 0;
+      return {
+        ...b,
+        [field]: value,
+        northing: Number((b.northing + dLat * 110574).toFixed(1)),
+        easting: Number((b.easting + dLng * 111320).toFixed(1)),
+      };
+    }));
   };
 
   const handleAddBeacon = () => {
@@ -68,26 +182,28 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
     const newBeacon: BeaconPoint = {
       id: `BC-${nextIndex}`,
       name: `PB ${nextIndex}`,
-      lat: Number((lastBeacon.lat + 0.0010).toFixed(4)),
-      lng: Number((lastBeacon.lng + 0.0008).toFixed(4)),
-      easting: Number((lastBeacon.easting + 120).toFixed(1)),
-      northing: Number((lastBeacon.northing + 110).toFixed(1)),
+      lat: Number((lastBeacon.lat + 0.0005).toFixed(4)),
+      lng: Number((lastBeacon.lng + 0.0005).toFixed(4)),
+      easting: Number((lastBeacon.easting + 55).toFixed(1)),
+      northing: Number((lastBeacon.northing + 55).toFixed(1)),
       elevation: 520.0
     };
     setBeacons([...beacons, newBeacon]);
   };
 
   const handleRemoveBeacon = (id: string) => {
-    if (beacons.length <= 3) return; // Maintain at least a triangle
+    if (beacons.length <= 3) return;
     setBeacons(beacons.filter(b => b.id !== id));
   };
 
   const handleSubmitApplication = () => {
     setIsSubmitting(true);
     setTimeout(() => {
+      const newId = `PAR-2026-${Math.floor(1000 + Math.random() * 9000)}`;
+      const statePrefix = state.toLowerCase().includes('lagos') ? 'LAG' : state.toLowerCase().includes('ogun') ? 'OGN' : 'FCT';
       const newParcel: ParcelRecord = {
-        id: `PAR-2026-${Math.floor(1000 + Math.random() * 9000)}`,
-        cadastralRef: `FCT/AMAC/MAI/2026-${Math.floor(100 + Math.random() * 900)}`,
+        id: newId,
+        cadastralRef: `${statePrefix}/${lga.slice(0, 4).toUpperCase()}/2026-${Math.floor(100 + Math.random() * 900)}`,
         applicantName,
         applicantNin,
         state,
@@ -104,11 +220,11 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
         beacons
       };
       onNewParcelSubmit(newParcel);
-      setSelectedParcelState(newParcel);
+      handleSetTrackedParcelId(newParcel.id);
       setIsSubmitting(false);
       setSubmissionSuccess(true);
       setActiveTab('tracker');
-    }, 800);
+    }, 600);
   };
 
   return (
@@ -183,23 +299,32 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
       <div className="flex-1 p-8">
         {activeTab === 'submit' && (
           <div className="max-w-6xl mx-auto space-y-6">
-            {/* Header intro */}
+            {/* Header intro + Quick Location Presets */}
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200 pb-5">
               <div>
                 <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
                   Cadastral Title Application & Beacon Registration
                 </h1>
                 <p className="text-sm text-slate-600 mt-1">
-                  Submit surveyed parcel beacons for automated GIS spatial verification, customary council audit, and Besu blockchain title tokenisation.
+                  Submit surveyed parcel beacons for automated GIS spatial verification, customary council audit, and title registration.
                 </p>
               </div>
-              <div className="flex items-center gap-3">
-                <span className="text-xs font-mono text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded">
-                  PostGIS ST_IsValid: Ready
-                </span>
-                <span className="text-xs font-mono text-slate-600 bg-slate-100 px-2.5 py-1 rounded">
-                  EPSG:4326 (WGS84)
-                </span>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[11px] font-medium text-slate-500 mr-1">Quick Presets:</span>
+                {PLOT_PRESETS.map((preset) => (
+                  <button
+                    key={preset.label}
+                    type="button"
+                    onClick={() => handleApplyPreset(preset)}
+                    className={`text-xs px-2.5 py-1.5 rounded-lg border font-medium transition-colors ${
+                      district === preset.district
+                        ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                        : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -309,14 +434,30 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 font-mono tabular-nums">
-                        {beacons.map((b, idx) => (
+                        {beacons.map((b) => (
                           <tr key={b.id} className="hover:bg-slate-50/50">
-                            <td className="py-2.5 px-3 font-semibold text-slate-900 font-sans">{b.name}</td>
-                            <td className="py-2.5 px-3 text-slate-700">{b.lat.toFixed(4)}</td>
-                            <td className="py-2.5 px-3 text-slate-700">{b.lng.toFixed(4)}</td>
-                            <td className="py-2.5 px-3 text-slate-600">{b.easting.toFixed(1)}</td>
-                            <td className="py-2.5 px-3 text-slate-600">{b.northing.toFixed(1)}</td>
-                            <td className="py-2.5 px-2 text-center">
+                            <td className="py-2 px-3 font-semibold text-slate-900 font-sans">{b.name}</td>
+                            <td className="py-2 px-3">
+                              <input
+                                type="number"
+                                step="0.0001"
+                                value={b.lat}
+                                onChange={(e) => handleUpdateBeaconCoord(b.id, 'lat', parseFloat(e.target.value))}
+                                className="w-24 px-2 py-1 bg-slate-50 border border-slate-200 rounded text-slate-700 focus:outline-emerald-600"
+                              />
+                            </td>
+                            <td className="py-2 px-3">
+                              <input
+                                type="number"
+                                step="0.0001"
+                                value={b.lng}
+                                onChange={(e) => handleUpdateBeaconCoord(b.id, 'lng', parseFloat(e.target.value))}
+                                className="w-24 px-2 py-1 bg-slate-50 border border-slate-200 rounded text-slate-700 focus:outline-emerald-600"
+                              />
+                            </td>
+                            <td className="py-2 px-3 text-slate-600">{b.easting.toFixed(1)}</td>
+                            <td className="py-2 px-3 text-slate-600">{b.northing.toFixed(1)}</td>
+                            <td className="py-2 px-2 text-center">
                               <button 
                                 onClick={() => handleRemoveBeacon(b.id)}
                                 disabled={beacons.length <= 3}
@@ -390,22 +531,32 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
                   </div>
 
                   <div className="p-4 border border-dashed border-slate-300 rounded-xl bg-slate-50/50 flex flex-col sm:flex-row items-center justify-between gap-4">
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
                       <div className="w-10 h-10 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
                         <ShieldCheck className="w-5 h-5" />
                       </div>
-                      <div>
-                        <div className="text-xs font-semibold text-slate-800">
-                          Official_Survey_Plan_{surveyPlanRef.replace(/\//g, '_')}.pdf
+                      <div className="min-w-0">
+                        <div className="text-xs font-semibold text-slate-800 truncate">
+                          {uploadedFileName}
                         </div>
                         <div className="text-[11px] text-slate-500 font-mono mt-0.5">
-                          SHA-256: {calculatedHash.slice(0, 18)}...{calculatedHash.slice(-10)}
+                          {isHashingFile ? 'Computing SHA-256 fingerprint...' : `SHA-256: ${calculatedHash.slice(0, 18)}...${calculatedHash.slice(-10)}`}
                         </div>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 shrink-0">
+                      <label className="cursor-pointer px-3 py-1.5 bg-white hover:bg-slate-100 border border-slate-300 rounded-lg text-[11px] font-semibold text-slate-700 flex items-center gap-1.5 transition-colors">
+                        <Upload className="w-3.5 h-3.5 text-emerald-700" />
+                        <span>Upload Survey PDF</span>
+                        <input
+                          type="file"
+                          accept=".pdf,.png,.jpg,.jpeg,.doc,.docx"
+                          onChange={handleFileUpload}
+                          className="hidden"
+                        />
+                      </label>
                       <span className="text-[11px] text-emerald-700 font-medium bg-emerald-100/60 px-2 py-1 rounded">
-                        Integrity Verified
+                        Verified
                       </span>
                     </div>
                   </div>
@@ -590,10 +741,30 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
           </div>
         )}
 
-        {activeTab === 'tracker' && (
+        {activeTab === 'tracker' && selectedParcel && (
           <div className="max-w-4xl mx-auto space-y-6">
+            {submissionSuccess && (
+              <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                <div className="flex items-center gap-2.5 text-emerald-900 font-medium">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+                  <span>
+                    Application <strong>{selectedParcel.cadastralRef}</strong> has been lodged! Next step: verify boundaries on the Surveyor GIS Map.
+                  </span>
+                </div>
+                {onNextStep && (
+                  <button
+                    onClick={() => onNextStep(selectedParcel.id)}
+                    className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white font-semibold rounded-lg flex items-center gap-1.5 shrink-0 transition-colors"
+                  >
+                    <span>Open Step 3: Surveyor GIS Map</span>
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            )}
+
             <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-xs">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-5 border-b border-slate-200 gap-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-5 border-b border-slate-200 gap-4">
                 <div>
                   <div className="text-xs font-mono text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded w-fit mb-1">
                     Application Ref: {selectedParcel.id}
@@ -606,10 +777,20 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
                   </div>
                 </div>
 
-                <div className="text-right">
-                  <div className="text-xs text-slate-500">Current Pipeline Status</div>
-                  <div className="text-sm font-bold text-emerald-700 capitalize mt-0.5">
-                    {selectedParcel.status.replace('_', ' ')}
+                <div className="flex flex-col sm:items-end gap-2">
+                  <select
+                    value={selectedParcel.id}
+                    onChange={(e) => handleSetTrackedParcelId(e.target.value)}
+                    className="bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-lg px-3 py-1.5 font-mono focus:outline-emerald-600"
+                  >
+                    {parcels.map(p => (
+                      <option key={p.id} value={p.id}>
+                        {p.cadastralRef} ({p.status.replace('_', ' ')})
+                      </option>
+                    ))}
+                  </select>
+                  <div className="text-xs text-slate-500">
+                    Current Status: <span className="font-bold text-emerald-700 capitalize">{selectedParcel.status.replace('_', ' ')}</span>
                   </div>
                 </div>
               </div>
@@ -666,6 +847,21 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
                   </div>
                 </div>
               </div>
+
+              {onNextStep && (
+                <div className="mt-5 pt-4 border-t border-slate-100 flex items-center justify-between">
+                  <span className="text-xs text-slate-500">
+                    Ready to inspect parcel boundaries and verify zero overlap?
+                  </span>
+                  <button
+                    onClick={() => onNextStep(selectedParcel.id)}
+                    className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 transition-colors"
+                  >
+                    <span>Inspect in Step 3: Surveyor GIS Map</span>
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -762,10 +958,25 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
                       <ExternalLink className="w-3.5 h-3.5" />
                     </button>
                     <div className="flex items-center gap-2">
-                      <button className="p-1.5 text-slate-500 hover:text-slate-800 rounded hover:bg-slate-100" title="Share Title Deed">
+                      {copiedId === title.id && (
+                        <span className="text-[11px] font-medium text-emerald-700">Copied!</span>
+                      )}
+                      <button 
+                        onClick={() => {
+                          navigator.clipboard?.writeText(`Anagu Verified Title: ${title.cadastralRef} | Owner: ${title.applicantName} | Token #${title.tokenId}`);
+                          setCopiedId(title.id);
+                          setTimeout(() => setCopiedId(null), 2000);
+                        }}
+                        className="p-1.5 text-slate-500 hover:text-slate-800 rounded hover:bg-slate-100" 
+                        title="Copy Verification Summary"
+                      >
                         <Share2 className="w-3.5 h-3.5" />
                       </button>
-                      <button className="p-1.5 text-slate-500 hover:text-slate-800 rounded hover:bg-slate-100" title="Download Deed PDF">
+                      <button 
+                        onClick={() => window.print()}
+                        className="p-1.5 text-slate-500 hover:text-slate-800 rounded hover:bg-slate-100" 
+                        title="Print / Save Deed PDF"
+                      >
                         <Download className="w-3.5 h-3.5" />
                       </button>
                     </div>

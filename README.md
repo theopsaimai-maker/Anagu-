@@ -80,14 +80,16 @@ git push -u origin main
 
 ---
 
-## Free 1-Click Deployment to GitHub Pages
+## Free Deployment to GitHub Pages
 
-This repository already includes an automated **GitHub Actions workflow** (`.github/workflows/deploy.yml`):
+Once your code is pushed to GitHub, enable live hosting directly in your browser:
 
-1. Go to your GitHub repository in your browser.
+1. Go to your repository on **GitHub**.
 2. Click **Settings** > **Pages** (in the left sidebar).
-3. Under **Build and deployment** > **Source**, choose **GitHub Actions**.
-4. Push any change to your `main` branch: GitHub Actions will automatically compile and publish your live website at `https://<your-username>.github.io/<your-repo-name>/`!
+3. Under **Build and deployment** > **Source**, select **GitHub Actions** and click **Configure** on the suggested static workflow (or create a workflow directly in GitHub's **Actions** tab to build `npm run build` and upload `./dist`).
+4. Your live site will publish to `https://<your-username>.github.io/<your-repo-name>/`!
+
+*(Note: `.github/workflows` was intentionally excluded from the starter files so OAuth-based GitHub publishing tools never reject your push due to missing `workflow` token scopes.)*
 
 ---
 
@@ -113,9 +115,6 @@ Open `http://localhost:8080`.
 ## Project Structure
 
 ```text
-├── .github/
-│   └── workflows/
-│       └── deploy.yml          # Automated GitHub Pages CI/CD
 ├── public/                     # Static assets
 ├── src/
 │   ├── assets/                 # Generated cadastral & architecture imagery

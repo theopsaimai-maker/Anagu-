@@ -3,6 +3,7 @@ dist
 build
 .git
 .github
+.aistudio
 .env*
 !.env.example
 *.log

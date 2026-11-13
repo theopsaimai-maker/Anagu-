@@ -8,16 +8,25 @@ import {
   FigmaFrame 
 } from '../types/anagu';
 
+import abujaGisMapImg from '../assets/images/abuja_cadastral_gis_map_1794565715069.jpg';
+import titleSealImg from '../assets/images/nigeria_land_registry_seal_1794565715880.jpg';
+import governorDeskImg from '../assets/images/nigeria_governor_executive_desk_1794565717313.jpg';
+import oracleEldersImg from '../assets/images/community_oracle_elders_1790243575375.jpg';
+import heroArchitectureImg from '../assets/images/hero_cadastral_architecture_1794407019533.jpg';
+import bentoGovernanceImg from '../assets/images/bento_executive_governance_1794407019288.jpg';
+import logoAvatarImg from '../assets/images/anagu_logo_avatar_1794483457423.jpg';
+import userAvatarImg from '../assets/images/user_profile_avatar_1794483470203.jpg';
+
 export const ASSET_IMAGES = {
-  satelliteGrid: '/src/assets/images/cadastral_satellite_grid_1790243539472.jpg',
-  titleSeal: '/src/assets/images/anagu_title_seal_1790243549784.jpg',
-  governorDesk: '/src/assets/images/governor_executive_seal_1790243562677.jpg',
-  oracleElders: '/src/assets/images/community_oracle_elders_1790243575375.jpg',
-  heroArchitecture: '/src/assets/images/hero_cadastral_architecture_1794407019533.jpg',
-  bentoCadastre: '/src/assets/images/bento_satellite_cadastre_1794407020714.jpg',
-  bentoGovernance: '/src/assets/images/bento_executive_governance_1794407019288.jpg',
-  logoAvatar: '/src/assets/images/anagu_logo_avatar_1794483457423.jpg',
-  userAvatar: '/src/assets/images/user_profile_avatar_1794483470203.jpg',
+  satelliteGrid: abujaGisMapImg,
+  titleSeal: titleSealImg,
+  governorDesk: governorDeskImg,
+  oracleElders: oracleEldersImg,
+  heroArchitecture: heroArchitectureImg,
+  bentoCadastre: abujaGisMapImg,
+  bentoGovernance: bentoGovernanceImg,
+  logoAvatar: logoAvatarImg,
+  userAvatar: userAvatarImg,
 };
 
 export const INITIAL_PARCELS: ParcelRecord[] = [

@@ -95,8 +95,25 @@ export interface StorageOverheadField {
   baselineBits: number;
 }
 
-// Figma Design Environment Types
-export type FigmaViewMode = 'canvas' | 'prototype' | 'specs' | 'landing';
+// Figma Design Environment & Portal Workflow Types
+export type FigmaViewMode = 'canvas' | 'prototype' | 'specs' | 'landing' | 'portal' | 'auth';
+
+export type PortalStepId = 'citizen' | 'surveyor' | 'oracle';
+
+export type AuthMode = 'login' | 'signup';
+
+export type AccessRoleId = 'citizen' | 'surveyor' | 'oracle';
+
+export interface AuthUser {
+  id: string;
+  fullName: string;
+  email: string;
+  phone: string;
+  role: AccessRoleId;
+  state: string;
+  credentialId: string; // NIN, SURCON License, or Council Title
+  createdAt: string;
+}
 
 export type FigmaPageId = 
   | 'screens' 
