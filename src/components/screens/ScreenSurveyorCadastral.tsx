@@ -523,7 +523,7 @@ export const ScreenSurveyorCadastral: React.FC<Props> = ({
 
             {/* Approval Decision Call to Action */}
             <div className="pt-4 border-t border-slate-800 flex flex-wrap items-center justify-between gap-3">
-              {approvedNotification || activeParcel.status === 'spatial_verified' ? (
+              {approvedNotification || ['spatial_verified', 'oracle_verified', 'legal_approved', 'registered'].includes(activeParcel.status) ? (
                 <div className="text-xs text-emerald-400 font-semibold flex items-center gap-1.5">
                   <CheckCircle2 className="w-4 h-4" />
                   <span>Spatial Cadastre Verified!</span>

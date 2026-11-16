@@ -14,11 +14,12 @@ import {
   Plus,
   Trash2
 } from 'lucide-react';
-import { ParcelRecord, BeaconPoint } from '../../types/anagu';
+import { ParcelRecord, BeaconPoint, AuthUser } from '../../types/anagu';
 import { ASSET_IMAGES } from '../../data/mockData';
 
 interface Props {
   parcels: ParcelRecord[];
+  currentUser?: AuthUser | null;
   onNewParcelSubmit: (newParcel: ParcelRecord) => void;
   onSelectParcel: (parcel: ParcelRecord) => void;
   selectedParcelId?: string;
@@ -73,6 +74,7 @@ const PLOT_PRESETS = [
 
 export const ScreenCitizenPortal: React.FC<Props> = ({ 
   parcels, 
+  currentUser,
   onNewParcelSubmit,
   onSelectParcel,
   selectedParcelId,
@@ -90,8 +92,8 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
   };
   
   // Submission Form State
-  const [applicantName, setApplicantName] = useState('Chief Olufemi Adeleke');
-  const [applicantNin, setApplicantNin] = useState('NIN-9281-4019-3382');
+  const [applicantName, setApplicantName] = useState(currentUser?.fullName || 'Dr. Aminu Bello Abubakar');
+  const [applicantNin, setApplicantNin] = useState(currentUser?.credentialId || 'NIN-8921-4091-2311');
   const [state, setState] = useState('Federal Capital Territory');
   const [lga, setLga] = useState('Abuja Municipal (AMAC)');
   const [district, setDistrict] = useState('Maitama Cadastral Zone A05');
@@ -679,7 +681,7 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
                     </svg>
 
                     <div className="absolute bottom-3 left-3 bg-slate-900/90 backdrop-blur-xs border border-slate-800 text-[11px] px-2.5 py-1.5 rounded-lg text-slate-300 font-mono">
-                      Target Polygon: 1,945.8 m² · Zero Overlap
+                      Target Polygon: {calculateArea().toLocaleString()} m² · Zero Overlap
                     </div>
 
                     <div className="absolute top-3 right-3 bg-emerald-950/80 border border-emerald-700/50 text-[10px] text-emerald-300 px-2 py-1 rounded font-mono flex items-center gap-1.5">

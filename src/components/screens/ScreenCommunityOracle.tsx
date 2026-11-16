@@ -16,9 +16,18 @@ import {
 import { ParcelRecord } from '../../types/anagu';
 import { ASSET_IMAGES } from '../../data/mockData';
 
+interface OracleAttestationDetails {
+  affidavitRef?: string;
+  familyWitness?: string;
+  witnessNotes?: string;
+  reviewerId?: string;
+  quorumPercent?: number;
+  attestationScore?: number;
+}
+
 interface Props {
   parcels: ParcelRecord[];
-  onApproveOracle: (parcelId: string) => void;
+  onApproveOracle: (parcelId: string, details?: OracleAttestationDetails) => void;
   onEmitMqtt: (topic: any, payload: any) => void;
   selectedParcelId?: string;
   onSelectParcelId?: (id: string) => void;
@@ -92,7 +101,14 @@ export const ScreenCommunityOracle: React.FC<Props> = ({
     setIsAttesting(true);
     setTimeout(() => {
       setIsAttesting(false);
-      onApproveOracle(activeParcel.id);
+      onApproveOracle(activeParcel.id, {
+        affidavitRef,
+        familyWitness,
+        witnessNotes,
+        reviewerId: 'ORACLE_COUNCIL_AMAC_04',
+        quorumPercent,
+        attestationScore
+      });
       onEmitMqtt('land/verification/oracle', {
         applicationId: activeParcel.id,
         outcome: 'Verified',

@@ -265,9 +265,9 @@ export default function App() {
     });
   };
 
-  const handleApproveOracle = (parcelId: string) => {
+  const handleApproveOracle = (parcelId: string, details?: Record<string, any>) => {
     setParcels(prev => prev.map(p => p.id === parcelId ? { ...p, status: 'oracle_verified' } : p));
-    apiApproveOracle(parcelId).catch(() => {
+    apiApproveOracle(parcelId, details).catch(() => {
       // Keep local state if offline
     });
   };
@@ -538,6 +538,7 @@ export default function App() {
           {activePortalStep === 'citizen' && (
             <ScreenCitizenPortal
               parcels={parcels}
+              currentUser={currentUser}
               onNewParcelSubmit={handleNewParcelSubmit}
               onSelectParcel={(p) => {
                 setActiveParcelId(p.id);

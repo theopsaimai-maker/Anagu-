@@ -43,7 +43,7 @@ interface Props {
   parcels: ParcelRecord[];
   onNewParcelSubmit: (p: ParcelRecord) => void;
   onApproveSpatial: (id: string) => void;
-  onApproveOracle: (id: string) => void;
+  onApproveOracle: (id: string, details?: Record<string, any>) => void;
   onMintTitle: (id: string, tokenId: number, tx: string) => void;
   onRevokeTitle: (id: string, ground: RevocationGround, gazette: string, reason: string) => void;
   mqttMessages: MqttMessage[];
