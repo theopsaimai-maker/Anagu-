@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { AccessRoleId, AuthMode, AuthUser } from '../../types/anagu';
 import { ASSET_IMAGES } from '../../data/mockData';
+import { apiDemoLogin, apiLogin, apiSignup } from '../../lib/api';
 
 export interface StoredAuthAccount extends AuthUser {
   password: string;
@@ -166,6 +167,7 @@ export const ScreenAuth: React.FC<Props> = ({
   const [acceptedTerms, setAcceptedTerms] = useState(true);
 
   const [imageBroken, setImageBroken] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const roleInfo = ROLE_META[selectedRole];
   const RoleIcon = roleInfo.icon;
@@ -176,7 +178,7 @@ export const ScreenAuth: React.FC<Props> = ({
     setShowForgotHelp(false);
   };
 
-  const handleLoginSubmit = (e: React.FormEvent) => {
+  const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
 
@@ -186,22 +188,29 @@ export const ScreenAuth: React.FC<Props> = ({
       return;
     }
 
-    const found = accounts.find((acc) => acc.email.toLowerCase() === normalizedEmail);
-    if (!found) {
-      setErrorMsg('No Anagu account was found for that email. Switch to Create Account to register.');
-      return;
+    setIsSubmitting(true);
+    try {
+      const user = await apiLogin(normalizedEmail, loginPassword);
+      onAuthSuccess(user);
+    } catch (err) {
+      const found = accounts.find((acc) => acc.email.toLowerCase() === normalizedEmail);
+      if (found && found.password === loginPassword) {
+        const { password: _removed, ...safeUser } = found;
+        void _removed;
+        onAuthSuccess(safeUser);
+      } else {
+        setErrorMsg(
+          err instanceof Error
+            ? err.message
+            : 'Invalid email or password. Please check your credentials or use a verified sample profile below.'
+        );
+      }
+    } finally {
+      setIsSubmitting(false);
     }
-    if (found.password !== loginPassword) {
-      setErrorMsg('Incorrect password. Please check your password or use a verified sample profile below.');
-      return;
-    }
-
-    const { password: _removed, ...safeUser } = found;
-    void _removed;
-    onAuthSuccess(safeUser);
   };
 
-  const handleSignupSubmit = (e: React.FormEvent) => {
+  const handleSignupSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
 
@@ -231,36 +240,51 @@ export const ScreenAuth: React.FC<Props> = ({
       return;
     }
 
-    const alreadyExists = accounts.some((acc) => acc.email.toLowerCase() === normalizedEmail);
-    if (alreadyExists) {
-      setErrorMsg('An account with this email already exists. Please sign in instead.');
-      return;
+    setIsSubmitting(true);
+    try {
+      const createdUser = await apiSignup({
+        fullName: trimmedName,
+        email: normalizedEmail,
+        phone: trimmedPhone,
+        role: selectedRole,
+        state: stateJurisdiction,
+        credentialId: trimmedCred,
+        password: signupPassword
+      });
+      onRegisterAccount({ ...createdUser, password: signupPassword });
+      onAuthSuccess(createdUser);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to create account.';
+      // If email conflict returned by DB, show error cleanly instead of creating local duplicate
+      if (message.toLowerCase().includes('already exists')) {
+        setErrorMsg(message);
+      } else {
+        const alreadyExists = accounts.some((acc) => acc.email.toLowerCase() === normalizedEmail);
+        if (alreadyExists) {
+          setErrorMsg('An account with this email already exists. Please sign in instead.');
+        } else {
+          setErrorMsg(message);
+        }
+      }
+    } finally {
+      setIsSubmitting(false);
     }
-
-    const newAccount: StoredAuthAccount = {
-      id: `usr-${Date.now()}`,
-      fullName: trimmedName,
-      email: normalizedEmail,
-      phone: trimmedPhone,
-      role: selectedRole,
-      state: stateJurisdiction,
-      credentialId: trimmedCred,
-      password: signupPassword,
-      createdAt: new Date().toISOString().slice(0, 10)
-    };
-
-    onRegisterAccount(newAccount);
-    const { password: _removed, ...safeUser } = newAccount;
-    void _removed;
-    onAuthSuccess(safeUser);
   };
 
-  const handleDemoSignIn = (role: AccessRoleId) => {
+  const handleDemoSignIn = async (role: AccessRoleId) => {
     setErrorMsg('');
-    const demoAccount = accounts.find((a) => a.role === role) || INITIAL_DEMO_ACCOUNTS[0];
-    const { password: _removed, ...safeUser } = demoAccount;
-    void _removed;
-    onAuthSuccess(safeUser);
+    setIsSubmitting(true);
+    try {
+      const user = await apiDemoLogin(role);
+      onAuthSuccess(user);
+    } catch {
+      const demoAccount = accounts.find((a) => a.role === role) || INITIAL_DEMO_ACCOUNTS[0];
+      const { password: _removed, ...safeUser } = demoAccount;
+      void _removed;
+      onAuthSuccess(safeUser);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -547,9 +571,10 @@ export const ScreenAuth: React.FC<Props> = ({
 
                 <button
                   type="submit"
-                  className="w-full py-3.5 px-5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm rounded-xl shadow-md transition-all flex items-center justify-center gap-2 min-h-[44px]"
+                  disabled={isSubmitting}
+                  className="w-full py-3.5 px-5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white font-bold text-sm rounded-xl shadow-md transition-all flex items-center justify-center gap-2 min-h-[44px]"
                 >
-                  <span>Sign In</span>
+                  <span>{isSubmitting ? 'Signing In...' : 'Sign In'}</span>
                   <ArrowRight className="w-4 h-4" />
                 </button>
               </form>
@@ -708,9 +733,12 @@ export const ScreenAuth: React.FC<Props> = ({
 
                 <button
                   type="submit"
-                  className="w-full py-3.5 px-5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm rounded-xl shadow-md transition-all flex items-center justify-center gap-2 min-h-[44px]"
+                  disabled={isSubmitting}
+                  className="w-full py-3.5 px-5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white font-bold text-sm rounded-xl shadow-md transition-all flex items-center justify-center gap-2 min-h-[44px]"
                 >
-                  <span>Create Account &amp; Enter {roleInfo.portalTitle}</span>
+                  <span>
+                    {isSubmitting ? 'Creating Account...' : `Create Account & Enter ${roleInfo.portalTitle}`}
+                  </span>
                   <ArrowRight className="w-4 h-4" />
                 </button>
               </form>

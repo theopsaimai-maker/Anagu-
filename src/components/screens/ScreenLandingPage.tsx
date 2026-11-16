@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { AccessRoleId, AuthMode, AuthUser, ParcelRecord, PortalStepId } from '../../types/anagu';
 import { ASSET_IMAGES } from '../../data/mockData';
+import { apiCreateInquiry } from '../../lib/api';
 
 interface Props {
   parcels: ParcelRecord[];
@@ -271,10 +272,21 @@ export const ScreenLandingPage: React.FC<Props> = ({
     setSearchNotFound(false);
   };
 
-  const handleFormSubmit = (e: React.FormEvent) => {
+  const handleFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!contactForm.name || !contactForm.phone) return;
     setFormSubmitted(true);
+    try {
+      await apiCreateInquiry({
+        name: contactForm.name,
+        phone: contactForm.phone,
+        email: contactForm.email || undefined,
+        state: contactForm.state,
+        message: contactForm.message || undefined
+      });
+    } catch {
+      // Keep confirmation state cleanly even if offline
+    }
   };
 
   const faqs = [

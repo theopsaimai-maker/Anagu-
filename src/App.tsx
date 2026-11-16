@@ -36,6 +36,16 @@ import { ScreenCommunityOracle } from './components/screens/ScreenCommunityOracl
 import { FigmaGuidedTour, TOUR_STEPS } from './components/figma/FigmaGuidedTour';
 import { FigmaShortcutsModal } from './components/figma/FigmaShortcutsModal';
 import { Home, FileText, Compass, Users, Layers, LogOut } from 'lucide-react';
+import {
+  apiApproveOracle,
+  apiApproveSpatial,
+  apiCreateMqttMessage,
+  apiCreateParcel,
+  apiListMqttMessages,
+  apiListParcels,
+  apiMintTitle,
+  apiRevokeTitle
+} from './lib/api';
 
 const STORAGE_KEY = 'anagu_parcels_v1';
 const USERS_STORAGE_KEY = 'anagu_users_v1';
@@ -113,6 +123,36 @@ export default function App() {
   const [authRole, setAuthRole] = useState<AccessRoleId>('citizen');
   const [activePortalStep, setActivePortalStep] = useState<PortalStepId>('citizen');
   const [activeParcelId, setActiveParcelId] = useState<string>(parcels[1]?.id || parcels[0]?.id || '');
+
+  // Hydrate registry parcels & MQTT log from database on mount
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const [remoteParcels, remoteMqtt] = await Promise.all([
+          apiListParcels(),
+          apiListMqttMessages()
+        ]);
+        if (!active) return;
+        if (Array.isArray(remoteParcels) && remoteParcels.length > 0) {
+          setParcels(remoteParcels);
+          setActiveParcelId((prev) =>
+            prev && remoteParcels.some((p) => p.id === prev)
+              ? prev
+              : remoteParcels[1]?.id || remoteParcels[0]?.id || ''
+          );
+        }
+        if (Array.isArray(remoteMqtt) && remoteMqtt.length > 0) {
+          setMqttMessages(remoteMqtt);
+        }
+      } catch {
+        // Keep local cache if backend API is temporarily unavailable
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
   const [activePage, setActivePage] = useState<FigmaPageId>('screens');
   const [zoomLevel, setZoomLevel] = useState<number>(0.65);
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 80, y: 60 });
@@ -203,9 +243,12 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [showTour, showShortcuts, viewMode, selectedFrameId, handleFocusFrame]);
 
-  // Pipeline state handlers
+  // Pipeline state handlers (optimistic state + PostgreSQL persistence)
   const handleNewParcelSubmit = (newParcel: ParcelRecord) => {
     setParcels(prev => [newParcel, ...prev]);
+    apiCreateParcel(newParcel, currentUser?.id).catch(() => {
+      // Keep local state if offline
+    });
     handleEmitMqtt('land/registration/status', {
       applicationId: newParcel.id,
       status: 'submitted',
@@ -217,21 +260,32 @@ export default function App() {
 
   const handleApproveSpatial = (parcelId: string) => {
     setParcels(prev => prev.map(p => p.id === parcelId ? { ...p, status: 'spatial_verified' } : p));
+    apiApproveSpatial(parcelId).catch(() => {
+      // Keep local state if offline
+    });
   };
 
   const handleApproveOracle = (parcelId: string) => {
     setParcels(prev => prev.map(p => p.id === parcelId ? { ...p, status: 'oracle_verified' } : p));
+    apiApproveOracle(parcelId).catch(() => {
+      // Keep local state if offline
+    });
   };
 
   const handleMintTitle = (parcelId: string, tokenId: number, txHash: string) => {
+    const blockNumber = Math.floor(1892040 + Math.random() * 100);
+    const issuanceTimestamp = new Date().toISOString();
     setParcels(prev => prev.map(p => p.id === parcelId ? {
       ...p,
       status: 'registered',
       tokenId,
       txHash,
-      blockNumber: Math.floor(1892040 + Math.random() * 100),
-      issuanceTimestamp: new Date().toISOString()
+      blockNumber,
+      issuanceTimestamp
     } : p));
+    apiMintTitle(parcelId, tokenId, txHash, blockNumber, issuanceTimestamp).catch(() => {
+      // Keep local state if offline
+    });
   };
 
   const handleRevokeTitle = (parcelId: string, ground: RevocationGround, gazetteNumber: string, reason: string) => {
@@ -247,11 +301,18 @@ export default function App() {
         revocationTxHash: '0x' + Array.from({length: 64}, () => Math.floor(Math.random()*16).toString(16)).join('')
       }
     } : p));
+    apiRevokeTitle(parcelId, ground, gazetteNumber, reason)
+      .then((updated) => {
+        setParcels(prev => prev.map(p => p.id === parcelId ? updated : p));
+      })
+      .catch(() => {
+        // Keep local state if offline
+      });
   };
 
   const handleEmitMqtt = (topic: any, payload: any, qos: 1 | 2 = 1) => {
     const newMsg: MqttMessage = {
-      id: `msg-${Date.now()}`,
+      id: `msg-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       topic,
       payload,
       qos,
@@ -260,6 +321,9 @@ export default function App() {
       status: 'delivered'
     };
     setMqttMessages(prev => [newMsg, ...prev]);
+    apiCreateMqttMessage(newMsg).catch(() => {
+      // Keep local state if offline
+    });
   };
 
   const handleFitCanvas = () => {
