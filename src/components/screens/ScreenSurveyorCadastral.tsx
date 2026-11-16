@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { ParcelRecord } from '../../types/anagu';
 import { ASSET_IMAGES } from '../../data/mockData';
+import { OpenStreetMapWidget } from '../maps/OpenStreetMapWidget';
 
 interface Props {
   parcels: ParcelRecord[];
@@ -51,6 +52,7 @@ export const ScreenSurveyorCadastral: React.FC<Props> = ({
 
   // Interactive GIS Map Viewport & Layer Controls
   const [mapZoom, setMapZoom] = useState<number>(1);
+  const [showOsm, setShowOsm] = useState<boolean>(true);
   const [showSatellite, setShowSatellite] = useState<boolean>(true);
   const [showNeighbors, setShowNeighbors] = useState<boolean>(true);
   const [showBuffer, setShowBuffer] = useState<boolean>(true);
@@ -104,6 +106,14 @@ export const ScreenSurveyorCadastral: React.FC<Props> = ({
               </div>
               <div className="flex flex-wrap items-center gap-1.5">
                 <button
+                  onClick={() => setShowOsm(v => !v)}
+                  className={`px-2 py-1 rounded text-[11px] font-medium border transition-colors ${
+                    showOsm ? 'bg-emerald-950/70 border-emerald-600/50 text-emerald-300' : 'bg-slate-800 border-slate-700 text-slate-400'
+                  }`}
+                >
+                  OpenStreetMap
+                </button>
+                <button
                   onClick={() => setShowSatellite(v => !v)}
                   className={`px-2 py-1 rounded text-[11px] font-medium border transition-colors ${
                     showSatellite ? 'bg-emerald-950/70 border-emerald-600/50 text-emerald-300' : 'bg-slate-800 border-slate-700 text-slate-400'
@@ -131,15 +141,24 @@ export const ScreenSurveyorCadastral: React.FC<Props> = ({
               </div>
             </div>
 
-            {/* Satellite / Cadastral Vector Screen */}
+            {/* Satellite / OpenStreetMap / Cadastral Vector Screen */}
             <div className="flex-1 relative bg-slate-950 flex items-center justify-center overflow-hidden">
               {/* Zoomable Viewport Wrapper */}
               <div
                 className="absolute inset-0 transition-transform duration-200 origin-center"
                 style={{ transform: `scale(${mapZoom})` }}
               >
-                {/* Satellite Background Layer */}
-                {showSatellite && (
+                {/* Live OpenStreetMap Base Layer */}
+                {showOsm ? (
+                  <div className="absolute inset-0 opacity-60">
+                    <OpenStreetMapWidget
+                      coordinates={activeParcel.coordinates}
+                      heightClassName="h-full border-0 rounded-none"
+                      interactive={false}
+                      polygonColor={hasCollision ? '#ef4444' : '#10b981'}
+                    />
+                  </div>
+                ) : showSatellite ? (
                   <div className="absolute inset-0 opacity-40">
                     <img 
                       src={ASSET_IMAGES.satelliteGrid} 
@@ -148,10 +167,10 @@ export const ScreenSurveyorCadastral: React.FC<Props> = ({
                       className="w-full h-full object-cover"
                     />
                   </div>
-                )}
+                ) : null}
 
                 {/* Grid overlay */}
-                <div className="absolute inset-0 cadastral-grid opacity-30" />
+                <div className="absolute inset-0 cadastral-grid opacity-30 pointer-events-none" />
 
                 {/* SVG Cadastral Layer */}
                 <svg className="absolute inset-0 w-full h-full" viewBox="0 0 600 420">

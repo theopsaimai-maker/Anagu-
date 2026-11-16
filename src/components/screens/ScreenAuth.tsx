@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { AccessRoleId, AuthMode, AuthUser } from '../../types/anagu';
 import { ASSET_IMAGES } from '../../data/mockData';
+import { NIGERIA_STATES_AND_LGAS } from '../../data/nigeriaLocations';
 import { apiDemoLogin, apiLogin, apiSignup, isBackendUnavailableError } from '../../lib/api';
 
 export interface StoredAuthAccount extends AuthUser {
@@ -662,12 +663,11 @@ export const ScreenAuth: React.FC<Props> = ({
                       onChange={(e) => setStateJurisdiction(e.target.value)}
                       className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-500"
                     >
-                      <option value="Federal Capital Territory (Abuja)">Federal Capital Territory (Abuja)</option>
-                      <option value="Lagos State">Lagos State</option>
-                      <option value="Enugu State">Enugu State</option>
-                      <option value="Ogun State">Ogun State</option>
-                      <option value="Kano State">Kano State</option>
-                      <option value="Rivers State">Rivers State</option>
+                      {NIGERIA_STATES_AND_LGAS.map((stateItem) => (
+                        <option key={stateItem.name} value={stateItem.name}>
+                          {stateItem.name}
+                        </option>
+                      ))}
                     </select>
                   </div>
                 </div>

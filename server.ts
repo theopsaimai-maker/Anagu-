@@ -1,7 +1,10 @@
 import 'dotenv/config';
+import dns from 'node:dns';
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+dns.setDefaultResultOrder('ipv4first');
 import type { AccessRoleId, MqttMessage, ParcelRecord, RevocationGround } from './src/types/anagu.ts';
 import {
   createInquiry,
@@ -237,6 +240,232 @@ async function startServer() {
     } catch (err) {
       console.error('[anagu/api] Create inquiry error:', err instanceof Error ? err.message : err);
       return res.status(500).json({ error: 'Failed to submit inquiry.' });
+    }
+  });
+
+  // OpenStreetMap Tile & Geocoding Proxy (same-origin for canvas screenshots & Leaflet)
+  const osmTileCache = new Map<string, Buffer>();
+  const geocodeCache = new Map<string, { lat: number; lng: number; displayName: string }>();
+  const geocodeSearchCache = new Map<
+    string,
+    Array<{ lat: number; lng: number; displayName: string; name: string; type: string }>
+  >();
+
+  app.get('/api/osm-tile/:z/:x/:y', async (req, res) => {
+    try {
+      const z = Number.parseInt(req.params.z, 10);
+      const x = Number.parseInt(req.params.x, 10);
+      const y = Number.parseInt(req.params.y.replace(/\.png$/i, ''), 10);
+      if (
+        !Number.isInteger(z) ||
+        !Number.isInteger(x) ||
+        !Number.isInteger(y) ||
+        z < 0 ||
+        z > 19 ||
+        x < 0 ||
+        y < 0 ||
+        x >= Math.pow(2, z) ||
+        y >= Math.pow(2, z)
+      ) {
+        return res.status(400).send('Invalid tile coordinates');
+      }
+
+      const key = `${z}/${x}/${y}`;
+      const cached = osmTileCache.get(key);
+      if (cached) {
+        res.setHeader('Content-Type', 'image/png');
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+        return res.send(cached);
+      }
+
+      const upstream = await fetch(`https://tile.openstreetmap.org/${z}/${x}/${y}.png`, {
+        headers: {
+          'User-Agent': 'AnaguLandAdministration/1.0 (+https://anagu.ng)'
+        },
+        signal: AbortSignal.timeout(6000)
+      });
+
+      if (!upstream.ok) {
+        return res.status(upstream.status).send('Upstream OSM tile unavailable');
+      }
+
+      const arrayBuf = await upstream.arrayBuffer();
+      const buf = Buffer.from(arrayBuf);
+      if (osmTileCache.size > 500) {
+        const firstKey = osmTileCache.keys().next().value;
+        if (firstKey) osmTileCache.delete(firstKey);
+      }
+      osmTileCache.set(key, buf);
+      res.setHeader('Content-Type', 'image/png');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      return res.send(buf);
+    } catch (err) {
+      console.warn('[anagu/osm] Tile proxy error:', err instanceof Error ? err.message : err);
+      return res.status(502).send('Failed to fetch OpenStreetMap tile');
+    }
+  });
+
+  type GeocodeItem = { lat: number; lng: number; displayName: string; name: string; type: string };
+
+  async function searchOsmLandmarksUpstream(q: string, limit: number): Promise<GeocodeItem[]> {
+    // 1. Try OpenStreetMap Nominatim
+    try {
+      const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=${limit}&countrycodes=ng&addressdetails=1`;
+      const upstream = await fetch(url, {
+        headers: {
+          'User-Agent': 'AnaguLandAdministration/1.0 (+https://anagu.ng)',
+          Accept: 'application/json'
+        },
+        signal: AbortSignal.timeout(4500)
+      });
+      if (upstream.ok) {
+        const raw = (await upstream.json()) as Array<{
+          lat?: string;
+          lon?: string;
+          display_name?: string;
+          name?: string;
+          type?: string;
+          addresstype?: string;
+        }>;
+        const parsed = (Array.isArray(raw) ? raw : [])
+          .map((item) => {
+            const lat = Number.parseFloat(item.lat || '');
+            const lng = Number.parseFloat(item.lon || '');
+            if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+            const displayName = item.display_name || q;
+            return {
+              lat,
+              lng,
+              displayName,
+              name: item.name || displayName.split(',')[0].trim(),
+              type: item.addresstype || item.type || 'place'
+            };
+          })
+          .filter((r): r is GeocodeItem => r !== null);
+        if (parsed.length > 0) return parsed;
+      }
+    } catch {
+      // Fallback to Photon OSM geocoder
+    }
+
+    // 2. Fallback to Photon (OpenStreetMap-powered)
+    try {
+      const photonUrl = `https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=${limit}`;
+      const upstream = await fetch(photonUrl, {
+        headers: {
+          'User-Agent': 'AnaguLandAdministration/1.0 (+https://anagu.ng)',
+          Accept: 'application/json'
+        },
+        signal: AbortSignal.timeout(4500)
+      });
+      if (upstream.ok) {
+        const data = (await upstream.json()) as {
+          features?: Array<{
+            geometry?: { coordinates?: [number, number] };
+            properties?: {
+              name?: string;
+              street?: string;
+              district?: string;
+              city?: string;
+              county?: string;
+              state?: string;
+              country?: string;
+              countrycode?: string;
+              osm_value?: string;
+              type?: string;
+            };
+          }>;
+        };
+        const features = Array.isArray(data.features) ? data.features : [];
+        const ngFeatures = features.filter(
+          (f) => !f.properties?.countrycode || f.properties.countrycode.toUpperCase() === 'NG'
+        );
+        const list = ngFeatures.length > 0 ? ngFeatures : features;
+        return list
+          .map((f) => {
+            const coords = f.geometry?.coordinates;
+            if (!coords || coords.length < 2) return null;
+            const [lng, lat] = coords;
+            if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+            const p = f.properties || {};
+            const parts = [p.name, p.street, p.district, p.city || p.county, p.state, p.country].filter(
+              (v, idx, arr): v is string => Boolean(v) && arr.indexOf(v) === idx
+            );
+            const displayName = parts.join(', ') || q;
+            return {
+              lat,
+              lng,
+              displayName,
+              name: p.name || p.street || displayName.split(',')[0].trim(),
+              type: p.osm_value || p.type || 'place'
+            };
+          })
+          .filter((r): r is GeocodeItem => r !== null);
+      }
+    } catch {
+      // Both failed
+    }
+
+    return [];
+  }
+
+  app.get('/api/geocode-search', async (req, res) => {
+    try {
+      const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+      if (!q) {
+        return res.status(400).json({ error: 'Query parameter q is required.' });
+      }
+      const cacheKey = q.toLowerCase();
+      const cached = geocodeSearchCache.get(cacheKey);
+      if (cached) {
+        return res.json({ results: cached });
+      }
+
+      const results = await searchOsmLandmarksUpstream(q, 5);
+      if (results.length > 0) {
+        if (geocodeSearchCache.size > 300) {
+          const firstKey = geocodeSearchCache.keys().next().value;
+          if (firstKey) geocodeSearchCache.delete(firstKey);
+        }
+        geocodeSearchCache.set(cacheKey, results);
+      }
+      return res.json({ results });
+    } catch (err) {
+      console.warn('[anagu/osm] Geocode search error:', err instanceof Error ? err.message : err);
+      return res.status(502).json({ error: 'Unable to search landmarks right now.' });
+    }
+  });
+
+  app.get('/api/geocode', async (req, res) => {
+    try {
+      const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+      if (!q) {
+        return res.status(400).json({ error: 'Query parameter q is required.' });
+      }
+      const cacheKey = q.toLowerCase();
+      const cached = geocodeCache.get(cacheKey);
+      if (cached) {
+        return res.json(cached);
+      }
+
+      const results = await searchOsmLandmarksUpstream(q, 1);
+      if (results.length === 0) {
+        return res.status(404).json({ error: 'Location not found.' });
+      }
+      const payload = {
+        lat: results[0].lat,
+        lng: results[0].lng,
+        displayName: results[0].displayName
+      };
+      if (geocodeCache.size > 300) {
+        const firstKey = geocodeCache.keys().next().value;
+        if (firstKey) geocodeCache.delete(firstKey);
+      }
+      geocodeCache.set(cacheKey, payload);
+      return res.json(payload);
+    } catch (err) {
+      console.warn('[anagu/osm] Geocode error:', err instanceof Error ? err.message : err);
+      return res.status(502).json({ error: 'Unable to geocode location right now.' });
     }
   });
 

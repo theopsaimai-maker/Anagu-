@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   MapPin,
   Home,
@@ -11,12 +11,38 @@ import {
   Layers,
   BadgeCheck,
   ArrowRight,
-  Landmark
+  Landmark,
+  Wallet,
+  Smartphone,
+  ExternalLink,
+  Copy,
+  Check,
+  RefreshCw,
+  ShieldCheck,
+  Loader2
 } from 'lucide-react';
 import { AuthUser, ParcelRecord, VerifiedLandListing } from '../../types/anagu';
-import { getLandmarkImageForParcel, VERIFIED_LANDS_FOR_SALE } from '../../data/verifiedLands';
+import { VERIFIED_LANDS_FOR_SALE } from '../../data/verifiedLands';
 import { ASSET_IMAGES } from '../../data/mockData';
 import { apiCreateInquiry } from '../../lib/api';
+import { OpenStreetMapWidget } from '../maps/OpenStreetMapWidget';
+import {
+  ConnectedWalletResult,
+  DiscoveredWallet,
+  ETH_USD_REFERENCE_RATE,
+  connectWeb3Wallet,
+  discoverWalletsOnce,
+  formatWalletError,
+  getChainName,
+  getMobileWalletDeepLinks,
+  isMobileDevice,
+  isValidEvmAddress,
+  sendPaymentToSellerWallet,
+  signLandPurchaseIntent,
+  subscribeEip6963Wallets,
+  truncateAddress,
+  usdToEthString
+} from '../../lib/web3Wallet';
 
 interface Props {
   parcels: ParcelRecord[];
@@ -36,7 +62,8 @@ const USE_FILTERS: Array<'All' | ParcelRecord['intendedUse']> = [
 const usdFormatter = new Intl.NumberFormat('en-US', {
   style: 'currency',
   currency: 'USD',
-  maximumFractionDigits: 0
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 2
 });
 
 function formatUsd(amount: number): string {
@@ -68,6 +95,73 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submittedRef, setSubmittedRef] = useState<string | null>(null);
 
+  const [discoveredWallets, setDiscoveredWallets] = useState<DiscoveredWallet[]>([]);
+  const [connectedWallet, setConnectedWallet] = useState<ConnectedWalletResult | null>(null);
+  const [walletStatus, setWalletStatus] = useState<
+    'idle' | 'connecting' | 'connected' | 'signing' | 'no_provider' | 'error'
+  >('idle');
+  const [walletError, setWalletError] = useState<string | null>(null);
+  const [walletSignature, setWalletSignature] = useState<string | null>(null);
+  const [copiedDappUrl, setCopiedDappUrl] = useState(false);
+  const [copiedSellerWallet, setCopiedSellerWallet] = useState(false);
+  const [paymentMode, setPaymentMode] = useState<'full' | 'deposit'>('full');
+  const [paymentEthAmount, setPaymentEthAmount] = useState<string>('');
+  const [isSendingPayment, setIsSendingPayment] = useState(false);
+  const [paymentTxHash, setPaymentTxHash] = useState<string | null>(null);
+
+  const mobileLinks = useMemo(() => getMobileWalletDeepLinks(), []);
+  const isMobile = useMemo(() => isMobileDevice(), []);
+
+  useEffect(() => {
+    const unsubscribe = subscribeEip6963Wallets((wallets) => {
+      setDiscoveredWallets(wallets);
+    });
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    const provider = connectedWallet?.provider;
+    if (!provider?.on || !provider?.removeListener) return;
+
+    const handleAccountsChanged = (accountsArg: unknown) => {
+      const accounts = Array.isArray(accountsArg)
+        ? accountsArg.filter((a): a is string => typeof a === 'string')
+        : [];
+      if (accounts.length === 0) {
+        setConnectedWallet(null);
+        setWalletSignature(null);
+        setWalletStatus(discoveredWallets.length > 0 ? 'idle' : 'no_provider');
+      } else {
+        setConnectedWallet((prev) =>
+          prev ? { ...prev, address: accounts[0] } : prev
+        );
+        setWalletSignature(null);
+      }
+    };
+
+    const handleChainChanged = (chainArg: unknown) => {
+      if (typeof chainArg !== 'string') return;
+      const { chainIdDecimal, chainName } = getChainName(chainArg);
+      setConnectedWallet((prev) =>
+        prev
+          ? {
+              ...prev,
+              chainIdHex: chainArg,
+              chainIdDecimal,
+              chainName
+            }
+          : prev
+      );
+    };
+
+    provider.on('accountsChanged', handleAccountsChanged);
+    provider.on('chainChanged', handleChainChanged);
+    return () => {
+      provider.removeListener?.('accountsChanged', handleAccountsChanged);
+      provider.removeListener?.('chainChanged', handleChainChanged);
+    };
+  }, [connectedWallet?.provider, discoveredWallets.length]);
+
   const allListings = useMemo<VerifiedLandListing[]>(() => {
     const existingRefs = new Set(VERIFIED_LANDS_FOR_SALE.map((item) => item.cadastralRef));
     const newlyRegistered: VerifiedLandListing[] = parcels
@@ -83,12 +177,15 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
         priceUsd: p.priceUsd && p.priceUsd > 0 ? p.priceUsd : Math.round(p.areaSqm * 45),
         intendedUse: p.intendedUse,
         sellerName: p.applicantName,
+        sellerWallet: p.sellerWallet,
         surveyPlanRef: p.surveyPlanRef,
         spatialHash: p.spatialHash,
         tokenId: p.tokenId || 4300 + idx,
         verificationBadge: 'Registered & Verified',
-        landmark: `${p.district}, ${p.state}`,
-        imageUrl: getLandmarkImageForParcel(p.state, p.intendedUse)
+        landmark: `OpenStreetMap · ${p.lga}, ${p.state}`,
+        imageUrl: p.mapSnapshotUrl || '',
+        coordinates: p.coordinates,
+        isOsmSnapshot: true
       }));
     return [...newlyRegistered, ...VERIFIED_LANDS_FOR_SALE];
   }, [parcels]);
@@ -110,6 +207,37 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
     });
   }, [allListings, searchQuery, selectedUse]);
 
+  const triggerWalletConnection = async (targetWallet?: DiscoveredWallet) => {
+    setWalletError(null);
+    setWalletSignature(null);
+    setWalletStatus('connecting');
+
+    try {
+      const wallets = targetWallet
+        ? [targetWallet]
+        : discoveredWallets.length > 0
+          ? discoveredWallets
+          : await discoverWalletsOnce(180);
+
+      if (!targetWallet && wallets.length > 0) {
+        setDiscoveredWallets(wallets);
+      }
+
+      const chosen = targetWallet || wallets[0];
+      if (!chosen) {
+        setWalletStatus('no_provider');
+        return;
+      }
+
+      const connected = await connectWeb3Wallet(chosen);
+      setConnectedWallet(connected);
+      setWalletStatus('connected');
+    } catch (err) {
+      setWalletStatus('error');
+      setWalletError(formatWalletError(err));
+    }
+  };
+
   const openBuyModal = (listing: VerifiedLandListing) => {
     setBuyListing(listing);
     setBuyerName(currentUser?.fullName || '');
@@ -120,6 +248,92 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
     );
     setSubmitError(null);
     setSubmittedRef(null);
+    setWalletError(null);
+    setWalletSignature(null);
+    setPaymentTxHash(null);
+    setIsSendingPayment(false);
+    setPaymentMode('full');
+    setPaymentEthAmount(usdToEthString(listing.priceUsd));
+
+    if (connectedWallet) {
+      setWalletStatus('connected');
+    } else {
+      void triggerWalletConnection();
+    }
+  };
+
+  const handleSelectPaymentMode = (mode: 'full' | 'deposit') => {
+    if (!buyListing) return;
+    setPaymentMode(mode);
+    const usdTarget = mode === 'full' ? buyListing.priceUsd : buyListing.priceUsd * 0.1;
+    setPaymentEthAmount(usdToEthString(usdTarget));
+  };
+
+  const handleCopySellerWallet = async (walletAddr?: string) => {
+    if (!walletAddr || typeof window === 'undefined' || !navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(walletAddr);
+      setCopiedSellerWallet(true);
+      window.setTimeout(() => setCopiedSellerWallet(false), 2000);
+    } catch {
+      // Clipboard write unavailable
+    }
+  };
+
+  const handlePaySellerWallet = async () => {
+    if (!buyListing || !connectedWallet) return;
+    if (!buyListing.sellerWallet || !isValidEvmAddress(buyListing.sellerWallet)) {
+      setWalletError('This listing does not have a valid seller EVM wallet address.');
+      return;
+    }
+
+    setWalletError(null);
+    setIsSendingPayment(true);
+    try {
+      const { txHash } = await sendPaymentToSellerWallet({
+        provider: connectedWallet.provider,
+        fromAccount: connectedWallet.address,
+        toSellerWallet: buyListing.sellerWallet,
+        ethAmount: paymentEthAmount
+      });
+      setPaymentTxHash(txHash);
+    } catch (err) {
+      setWalletError(formatWalletError(err));
+    } finally {
+      setIsSendingPayment(false);
+    }
+  };
+
+  const handleSignPurchaseOnly = async () => {
+    if (!buyListing || !connectedWallet) return;
+    setWalletError(null);
+    setWalletStatus('signing');
+    try {
+      const { signature } = await signLandPurchaseIntent({
+        provider: connectedWallet.provider,
+        account: connectedWallet.address,
+        cadastralRef: buyListing.cadastralRef,
+        title: buyListing.title,
+        priceUsd: buyListing.priceUsd,
+        sellerName: buyListing.sellerName
+      });
+      setWalletSignature(signature);
+      setWalletStatus('connected');
+    } catch (err) {
+      setWalletStatus('connected');
+      setWalletError(formatWalletError(err));
+    }
+  };
+
+  const handleCopyDappUrl = async () => {
+    if (typeof window === 'undefined' || !navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      setCopiedDappUrl(true);
+      window.setTimeout(() => setCopiedDappUrl(false), 2000);
+    } catch {
+      // Clipboard write unavailable
+    }
   };
 
   const handleSubmitPurchase = async (e: React.FormEvent) => {
@@ -132,7 +346,44 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
 
     setIsSubmitting(true);
     setSubmitError(null);
+    setWalletError(null);
+
+    let activeSignature = walletSignature;
+    if (connectedWallet && !activeSignature && !paymentTxHash) {
+      setWalletStatus('signing');
+      try {
+        const signed = await signLandPurchaseIntent({
+          provider: connectedWallet.provider,
+          account: connectedWallet.address,
+          cadastralRef: buyListing.cadastralRef,
+          title: buyListing.title,
+          priceUsd: buyListing.priceUsd,
+          sellerName: buyListing.sellerName
+        });
+        activeSignature = signed.signature;
+        setWalletSignature(signed.signature);
+        setWalletStatus('connected');
+      } catch (err) {
+        setWalletStatus('connected');
+        setWalletError(formatWalletError(err));
+        setIsSubmitting(false);
+        return;
+      }
+    }
+
     try {
+      const sellerWalletInfo = buyListing.sellerWallet
+        ? ` | Seller Wallet: ${buyListing.sellerWallet}`
+        : '';
+      const paymentProofInfo = paymentTxHash
+        ? ` | Direct Payment Tx (${paymentEthAmount} ETH): ${paymentTxHash}`
+        : '';
+      const walletProofSummary = connectedWallet
+        ? ` | Buyer Wallet (${connectedWallet.walletName} · ${connectedWallet.chainName}): ${connectedWallet.address}${
+            activeSignature ? ` | Signature: ${activeSignature}` : ''
+          }`
+        : '';
+
       await apiCreateInquiry({
         name: buyerName.trim(),
         phone: buyerPhone.trim(),
@@ -140,7 +391,7 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
         state: buyListing.state,
         message: `[LAND PURCHASE] Parcel: ${buyListing.title} (${buyListing.cadastralRef}) | Listed Price: ${formatUsd(
           buyListing.priceUsd
-        )} USD | Seller: ${buyListing.sellerName} | Buyer Notes: ${offerNotes.trim() || 'Ready for title verification & escrow.'}`
+        )} USD | Seller: ${buyListing.sellerName}${sellerWalletInfo}${paymentProofInfo}${walletProofSummary} | Buyer Notes: ${offerNotes.trim() || 'Ready for title verification & escrow.'}`
       });
       setSubmittedRef(buyListing.cadastralRef);
     } catch (err: any) {
@@ -270,7 +521,7 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                 {/* Top Section: Landmark Photo + Listing Info */}
                 <div>
                   <div className="relative aspect-[4/3] w-full overflow-hidden bg-gradient-to-br from-slate-800 via-emerald-950/40 to-slate-950">
-                    {!failedImages[listing.id] ? (
+                    {listing.imageUrl && !failedImages[listing.id] ? (
                       <img
                         src={listing.imageUrl}
                         alt={`${listing.title} showing ${listing.landmark}`}
@@ -278,13 +529,19 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                         onError={() => setFailedImages((prev) => ({ ...prev, [listing.id]: true }))}
                         className="w-full h-full object-cover object-center group-hover:scale-[1.03] transition-transform duration-300"
                       />
+                    ) : listing.isOsmSnapshot && listing.coordinates && listing.coordinates.length > 0 ? (
+                      <OpenStreetMapWidget
+                        coordinates={listing.coordinates}
+                        heightClassName="h-full"
+                        interactive={false}
+                      />
                     ) : (
                       <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center gap-2">
                         <Landmark className="w-8 h-8 text-emerald-400" />
                         <span className="text-xs font-semibold text-slate-200">{listing.landmark}</span>
                       </div>
                     )}
-                    <div className="absolute inset-0 bg-gradient-to-t from-slate-950/90 via-slate-950/20 to-transparent" />
+                    <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-slate-950/90 via-slate-950/20 to-transparent" />
                     <div className="absolute bottom-3 left-3.5 right-3.5 flex items-end justify-between gap-2">
                       <div className="min-w-0">
                         <div className="flex items-center gap-1 text-[11px] font-medium text-emerald-300 truncate">
@@ -342,11 +599,21 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-1.5 text-[11px] text-slate-400 truncate">
-                      <Building2 className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                      <span className="truncate" title={listing.sellerName}>
-                        Seller: <strong className="text-slate-300 font-medium">{listing.sellerName}</strong>
-                      </span>
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-1.5 text-[11px] text-slate-400 truncate">
+                        <Building2 className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                        <span className="truncate" title={listing.sellerName}>
+                          Seller: <strong className="text-slate-300 font-medium">{listing.sellerName}</strong>
+                        </span>
+                      </div>
+                      {listing.sellerWallet && (
+                        <div className="flex items-center gap-1.5 text-[10px] text-emerald-400/90 font-mono truncate">
+                          <Wallet className="w-3 h-3 shrink-0" />
+                          <span title={listing.sellerWallet}>
+                            Seller Wallet: {truncateAddress(listing.sellerWallet)}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -393,13 +660,21 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
             </div>
 
             <div className="py-5 space-y-4 text-xs">
-              <div className="w-full h-44 rounded-xl overflow-hidden border border-amber-200">
-                <img
-                  src={deedListing.imageUrl}
-                  alt={`${deedListing.title} showing ${deedListing.landmark}`}
-                  referrerPolicy="no-referrer"
-                  className="w-full h-full object-cover object-center"
-                />
+              <div className="w-full h-48 rounded-xl overflow-hidden border border-amber-200 bg-slate-900">
+                {deedListing.imageUrl ? (
+                  <img
+                    src={deedListing.imageUrl}
+                    alt={`${deedListing.title} showing ${deedListing.landmark}`}
+                    referrerPolicy="no-referrer"
+                    className="w-full h-full object-cover object-center"
+                  />
+                ) : deedListing.coordinates && deedListing.coordinates.length > 0 ? (
+                  <OpenStreetMapWidget
+                    coordinates={deedListing.coordinates}
+                    heightClassName="h-full"
+                    interactive={false}
+                  />
+                ) : null}
               </div>
 
               <p className="leading-relaxed text-slate-800">
@@ -438,6 +713,14 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                   <span className="text-slate-500 block">Registry Token ID:</span>
                   <div className="font-bold text-slate-900">#{deedListing.tokenId}</div>
                 </div>
+                {deedListing.sellerWallet && (
+                  <div className="col-span-2">
+                    <span className="text-slate-500 block">Seller&apos;s Receiving Wallet:</span>
+                    <div className="font-mono font-bold text-slate-900 truncate">
+                      {deedListing.sellerWallet}
+                    </div>
+                  </div>
+                )}
                 <div className="col-span-2">
                   <span className="text-slate-500 block">Digital Verification Hash:</span>
                   <div className="font-mono font-bold text-emerald-800 truncate">
@@ -519,13 +802,37 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
               <div className="p-6 space-y-4">
                 <div className="bg-emerald-950/50 border border-emerald-500/40 rounded-xl p-4 flex items-start gap-3">
                   <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
-                  <div className="space-y-1">
+                  <div className="space-y-1.5 min-w-0">
                     <div className="text-sm font-bold text-white">
                       Purchase Reservation Recorded
                     </div>
                     <p className="text-xs text-slate-300 leading-relaxed">
                       Your verified acquisition request for <strong className="text-white">{submittedRef}</strong> ({formatUsd(buyListing.priceUsd)} USD) has been lodged with the Anagu Escrow &amp; Title Transfer Desk.
                     </p>
+                    {(connectedWallet || paymentTxHash || buyListing.sellerWallet) && (
+                      <div className="mt-2 pt-2 border-t border-emerald-500/20 text-[11px] text-emerald-300 space-y-1">
+                        {buyListing.sellerWallet && (
+                          <div className="truncate font-mono">
+                            Seller Wallet: {buyListing.sellerWallet}
+                          </div>
+                        )}
+                        {connectedWallet && (
+                          <div className="truncate">
+                            Buyer Wallet: <span className="font-mono font-semibold">{connectedWallet.address}</span>
+                          </div>
+                        )}
+                        {paymentTxHash && (
+                          <div className="truncate font-mono text-[10px] text-emerald-200">
+                            Payment Tx ({paymentEthAmount} ETH): {paymentTxHash}
+                          </div>
+                        )}
+                        {walletSignature && (
+                          <div className="truncate font-mono text-[10px] text-emerald-400">
+                            Signature Proof: {walletSignature}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -542,12 +849,18 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
             ) : (
               <form onSubmit={handleSubmitPurchase} className="p-6 space-y-4">
                 <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 flex items-center gap-3.5">
-                  <img
-                    src={buyListing.imageUrl}
-                    alt={buyListing.landmark}
-                    referrerPolicy="no-referrer"
-                    className="w-16 h-12 object-cover rounded-lg shrink-0 border border-slate-800"
-                  />
+                  {buyListing.imageUrl ? (
+                    <img
+                      src={buyListing.imageUrl}
+                      alt={buyListing.landmark}
+                      referrerPolicy="no-referrer"
+                      className="w-16 h-12 object-cover rounded-lg shrink-0 border border-slate-800"
+                    />
+                  ) : (
+                    <div className="w-16 h-12 rounded-lg shrink-0 border border-slate-800 bg-emerald-950/40 flex items-center justify-center">
+                      <Landmark className="w-5 h-5 text-emerald-400" />
+                    </div>
+                  )}
                   <div className="flex-1 min-w-0">
                     <div className="text-[11px] text-slate-400 truncate">
                       {buyListing.areaSqm.toLocaleString()} m² · {buyListing.landmark}
@@ -562,6 +875,319 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                       {formatUsd(buyListing.priceUsd)}
                     </div>
                   </div>
+                </div>
+
+                {/* Web3 Wallet Trigger & Connection Section */}
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <Wallet className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span className="text-xs font-bold text-white">
+                        Web3 Wallet Authorization
+                      </span>
+                    </div>
+                    {connectedWallet ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setConnectedWallet(null);
+                          setWalletSignature(null);
+                          setWalletStatus(discoveredWallets.length > 0 ? 'idle' : 'no_provider');
+                        }}
+                        className="text-[11px] text-slate-400 hover:text-white transition-colors"
+                      >
+                        Disconnect
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => void triggerWalletConnection()}
+                        className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-400 hover:text-emerald-300 transition-colors"
+                      >
+                        <RefreshCw className="w-3 h-3" />
+                        <span>{discoveredWallets.length > 0 ? 'Trigger Wallet' : 'Detect Wallets'}</span>
+                      </button>
+                    )}
+                  </div>
+
+                  {walletStatus === 'connecting' && (
+                    <div className="flex items-center gap-2.5 text-xs text-amber-300 bg-amber-950/30 border border-amber-500/30 rounded-lg px-3 py-2.5">
+                      <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                      <span>
+                        Waiting for wallet approval on your PC extension or mobile wallet app...
+                      </span>
+                    </div>
+                  )}
+
+                  {walletStatus === 'signing' && (
+                    <div className="flex items-center gap-2.5 text-xs text-sky-300 bg-sky-950/30 border border-sky-500/30 rounded-lg px-3 py-2.5">
+                      <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                      <span>
+                        Check your Web3 wallet to sign the parcel purchase authorization...
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Seller's Registered Receiving Wallet */}
+                  {buyListing.sellerWallet && (
+                    <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-2.5 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[10px] uppercase tracking-wider font-semibold text-slate-400">
+                          Seller&apos;s Receiving Wallet
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => void handleCopySellerWallet(buyListing.sellerWallet)}
+                          className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-400 hover:text-emerald-300 transition-colors"
+                        >
+                          {copiedSellerWallet ? (
+                            <>
+                              <Check className="w-3 h-3" />
+                              <span>Copied</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3 h-3" />
+                              <span>Copy Address</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                      <div
+                        className="font-mono text-[11px] font-semibold text-emerald-300 break-all"
+                        title={buyListing.sellerWallet}
+                      >
+                        {buyListing.sellerWallet}
+                      </div>
+
+                      {connectedWallet && (
+                        <div className="pt-2 border-t border-slate-800 space-y-2">
+                          <div className="flex items-center justify-between gap-2 text-[10px] text-slate-400">
+                            <span>Pay directly in ETH (Ref: 1 ETH ≈ ${ETH_USD_REFERENCE_RATE.toLocaleString('en-US')})</span>
+                            <div className="inline-flex rounded-md bg-slate-950 border border-slate-800 p-0.5">
+                              <button
+                                type="button"
+                                onClick={() => handleSelectPaymentMode('full')}
+                                className={`px-2 py-0.5 rounded text-[10px] font-semibold transition-colors ${
+                                  paymentMode === 'full'
+                                    ? 'bg-emerald-600 text-white'
+                                    : 'text-slate-400 hover:text-white'
+                                }`}
+                              >
+                                Full Price
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleSelectPaymentMode('deposit')}
+                                className={`px-2 py-0.5 rounded text-[10px] font-semibold transition-colors ${
+                                  paymentMode === 'deposit'
+                                    ? 'bg-emerald-600 text-white'
+                                    : 'text-slate-400 hover:text-white'
+                                }`}
+                              >
+                                10% Deposit
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <div className="relative flex-1">
+                              <input
+                                type="text"
+                                inputMode="decimal"
+                                value={paymentEthAmount}
+                                onChange={(e) => {
+                                  if (/^[0-9.]*$/.test(e.target.value)) {
+                                    setPaymentEthAmount(e.target.value);
+                                  }
+                                }}
+                                aria-label="ETH amount to send to seller wallet"
+                                className="w-full px-2.5 py-1.5 pr-11 bg-slate-950 border border-slate-700 focus:border-emerald-500 rounded-lg font-mono text-xs text-white outline-none"
+                              />
+                              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] font-bold text-slate-400 pointer-events-none">
+                                ETH
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              disabled={isSendingPayment || Boolean(paymentTxHash)}
+                              onClick={() => void handlePaySellerWallet()}
+                              className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white text-xs font-bold whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 transition-colors"
+                            >
+                              {isSendingPayment ? (
+                                <>
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                  <span>Sending...</span>
+                                </>
+                              ) : paymentTxHash ? (
+                                <>
+                                  <CheckCircle2 className="w-3.5 h-3.5" />
+                                  <span>Paid</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Wallet className="w-3.5 h-3.5" />
+                                  <span>Pay Seller Wallet</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+
+                          {paymentTxHash && (
+                            <div className="text-[10px] font-mono text-emerald-300 bg-emerald-950/40 border border-emerald-500/30 rounded-md px-2.5 py-1.5 truncate">
+                              Payment Sent · Tx: {paymentTxHash}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {connectedWallet && (
+                    <div className="space-y-2.5">
+                      <div className="flex items-center justify-between gap-2 bg-emerald-950/30 border border-emerald-500/30 rounded-lg px-3 py-2">
+                        <div className="min-w-0">
+                          <div className="text-[11px] font-semibold text-emerald-300 truncate">
+                            Buyer: {connectedWallet.walletName} · {connectedWallet.chainName}
+                          </div>
+                          <div className="text-xs font-mono font-bold text-white">
+                            {truncateAddress(connectedWallet.address)}
+                          </div>
+                        </div>
+                        {walletSignature ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-emerald-600/20 border border-emerald-500/40 text-[10px] font-bold text-emerald-300 shrink-0">
+                            <ShieldCheck className="w-3 h-3" />
+                            <span>Signed</span>
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={handleSignPurchaseOnly}
+                            disabled={walletStatus === 'signing'}
+                            className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 disabled:opacity-60 text-[11px] font-semibold text-slate-200 shrink-0 transition-colors"
+                          >
+                            Sign Intent
+                          </button>
+                        )}
+                      </div>
+
+                      {discoveredWallets.length > 1 && (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-[10px] text-slate-400 mr-1">Switch wallet:</span>
+                          {discoveredWallets.map((w) => (
+                            <button
+                              key={w.id}
+                              type="button"
+                              onClick={() => void triggerWalletConnection(w)}
+                              className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-medium border transition-colors ${
+                                connectedWallet.walletName === w.name
+                                  ? 'border-emerald-500/50 bg-emerald-950/50 text-emerald-300'
+                                  : 'border-slate-700 bg-slate-900 hover:bg-slate-800 text-slate-300'
+                              }`}
+                            >
+                              {w.icon && (
+                                <img src={w.icon} alt="" className="w-3.5 h-3.5 rounded-xs" />
+                              )}
+                              <span>{w.name}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {!connectedWallet && discoveredWallets.length > 0 && walletStatus !== 'connecting' && (
+                    <div className="space-y-2">
+                      <p className="text-[11px] text-slate-400">
+                        Detected Web3 wallets on this device. Select one to connect:
+                      </p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {discoveredWallets.map((w) => (
+                          <button
+                            key={w.id}
+                            type="button"
+                            onClick={() => void triggerWalletConnection(w)}
+                            className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 hover:border-emerald-500/50 text-left transition-colors"
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              {w.icon ? (
+                                <img src={w.icon} alt="" className="w-4 h-4 rounded-xs shrink-0" />
+                              ) : (
+                                <Wallet className="w-4 h-4 text-emerald-400 shrink-0" />
+                              )}
+                              <span className="text-xs font-semibold text-white truncate">
+                                {w.name}
+                              </span>
+                            </div>
+                            <ArrowRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {!connectedWallet &&
+                    (walletStatus === 'no_provider' || discoveredWallets.length === 0) &&
+                    walletStatus !== 'connecting' && (
+                      <div className="space-y-2.5">
+                        <div className="flex items-start gap-2 text-[11px] text-slate-300">
+                          <Smartphone className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
+                          <span>
+                            {isMobile
+                              ? 'Open this purchase inside your mobile Web3 wallet app to sign with your wallet:'
+                              : 'No browser wallet extension was detected. Launch a mobile wallet via deep-link or enable a PC wallet (MetaMask, Rabby, Coinbase, Trust) and click Detect Wallets:'}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          {mobileLinks.map((walletLink) => (
+                            <a
+                              key={walletLink.id}
+                              href={walletLink.href}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className={`flex items-center justify-between gap-1.5 px-3 py-2 rounded-lg border text-xs font-semibold transition-colors ${walletLink.accentClass}`}
+                            >
+                              <span className="truncate">{walletLink.name}</span>
+                              <ExternalLink className="w-3.5 h-3.5 shrink-0 opacity-80" />
+                            </a>
+                          ))}
+                        </div>
+                        <div className="flex items-center justify-between gap-2 pt-0.5">
+                          <button
+                            type="button"
+                            onClick={handleCopyDappUrl}
+                            className="inline-flex items-center gap-1.5 text-[11px] text-slate-400 hover:text-white transition-colors"
+                          >
+                            {copiedDappUrl ? (
+                              <>
+                                <Check className="w-3.5 h-3.5 text-emerald-400" />
+                                <span className="text-emerald-400">DApp link copied</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3.5 h-3.5" />
+                                <span>Copy URL for any mobile wallet browser</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                  {walletError && (
+                    <div className="text-[11px] text-amber-300 bg-amber-950/40 border border-amber-600/40 rounded-lg px-3 py-2 flex items-center justify-between gap-2">
+                      <span>{walletError}</span>
+                      {!connectedWallet && discoveredWallets.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => void triggerWalletConnection()}
+                          className="text-xs font-bold text-amber-200 underline shrink-0"
+                        >
+                          Retry
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -626,10 +1252,23 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                   </button>
                   <button
                     type="submit"
-                    disabled={isSubmitting}
+                    disabled={
+                      isSubmitting ||
+                      isSendingPayment ||
+                      walletStatus === 'connecting' ||
+                      walletStatus === 'signing'
+                    }
                     className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white text-xs font-bold rounded-xl transition-colors"
                   >
-                    {isSubmitting ? 'Submitting...' : 'Submit Purchase Request'}
+                    {walletStatus === 'signing'
+                      ? 'Waiting for Wallet Sign...'
+                      : isSubmitting
+                        ? 'Submitting...'
+                        : paymentTxHash
+                          ? 'Complete Purchase Receipt'
+                          : connectedWallet && !walletSignature
+                            ? 'Sign with Wallet & Submit'
+                            : 'Submit Purchase Request'}
                   </button>
                 </div>
               </form>

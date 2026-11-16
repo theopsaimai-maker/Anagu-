@@ -511,28 +511,54 @@ function mapUserRow(row: StoredUserRow): AuthUser {
 
 function encodeBeaconsWithPrice(
   beacons: ParcelRecord['beacons'],
-  priceUsd?: number
+  priceUsd?: number,
+  mapSnapshotUrl?: string,
+  sellerWallet?: string
 ): Array<Record<string, unknown>> {
   const safeBeacons = Array.isArray(beacons) ? beacons : [];
-  if (typeof priceUsd !== 'number' || !Number.isFinite(priceUsd) || priceUsd <= 0) {
+  const hasPrice = typeof priceUsd === 'number' && Number.isFinite(priceUsd) && priceUsd > 0;
+  const hasSnapshot = typeof mapSnapshotUrl === 'string' && mapSnapshotUrl.trim().length > 0;
+  const hasSellerWallet = typeof sellerWallet === 'string' && sellerWallet.trim().length > 0;
+  if (!hasPrice && !hasSnapshot && !hasSellerWallet) {
     return safeBeacons.map((b) => ({ ...b }));
   }
+  const extra: Record<string, unknown> = {};
+  if (hasPrice) extra.priceUsd = priceUsd;
+  if (hasSnapshot) extra.mapSnapshotUrl = mapSnapshotUrl;
+  if (hasSellerWallet) extra.sellerWallet = sellerWallet.trim();
+
   if (safeBeacons.length === 0) {
-    return [{ id: 'META-1', name: 'PB 1', lat: 0, lng: 0, easting: 0, northing: 0, elevation: 0, priceUsd }];
+    return [{ id: 'META-1', name: 'PB 1', lat: 0, lng: 0, easting: 0, northing: 0, elevation: 0, ...extra }];
   }
-  return safeBeacons.map((b, idx) => (idx === 0 ? { ...b, priceUsd } : { ...b }));
+  return safeBeacons.map((b, idx) => (idx === 0 ? { ...b, ...extra } : { ...b }));
 }
 
 function mapParcelRow(row: StoredParcelRow): ParcelRecord {
-  const rawBeacons = Array.isArray(row.beacons) ? (row.beacons as Array<ParcelRecord['beacons'][number] & { priceUsd?: unknown }>) : [];
+  const rawBeacons = Array.isArray(row.beacons)
+    ? (row.beacons as Array<
+        ParcelRecord['beacons'][number] & {
+          priceUsd?: unknown;
+          mapSnapshotUrl?: unknown;
+          sellerWallet?: unknown;
+        }
+      >)
+    : [];
   const extractedPrice =
     typeof rawBeacons[0]?.priceUsd === 'number' && Number.isFinite(rawBeacons[0].priceUsd) && rawBeacons[0].priceUsd > 0
       ? rawBeacons[0].priceUsd
       : undefined;
+  const extractedSnapshot =
+    typeof rawBeacons[0]?.mapSnapshotUrl === 'string' && rawBeacons[0].mapSnapshotUrl.trim().length > 0
+      ? rawBeacons[0].mapSnapshotUrl
+      : undefined;
+  const extractedSellerWallet =
+    typeof rawBeacons[0]?.sellerWallet === 'string' && rawBeacons[0].sellerWallet.trim().length > 0
+      ? rawBeacons[0].sellerWallet.trim()
+      : undefined;
 
   const cleanBeacons: ParcelRecord['beacons'] = rawBeacons
     .filter((b) => b.id !== 'META-1')
-    .map(({ priceUsd: _ignored, ...rest }) => rest);
+    .map(({ priceUsd: _ignoredPrice, mapSnapshotUrl: _ignoredSnap, sellerWallet: _ignoredWallet, ...rest }) => rest);
 
   const parcel: ParcelRecord = {
     id: row.id,
@@ -554,6 +580,8 @@ function mapParcelRow(row: StoredParcelRow): ParcelRecord {
   };
 
   if (extractedPrice !== undefined) parcel.priceUsd = extractedPrice;
+  if (extractedSnapshot !== undefined) parcel.mapSnapshotUrl = extractedSnapshot;
+  if (extractedSellerWallet !== undefined) parcel.sellerWallet = extractedSellerWallet;
   if (row.token_id !== null && row.token_id !== undefined) parcel.tokenId = Number(row.token_id);
   if (row.tx_hash) parcel.txHash = row.tx_hash;
   if (row.block_number !== null && row.block_number !== undefined) parcel.blockNumber = Number(row.block_number);
@@ -574,7 +602,12 @@ function toParcelDbRecord(parcel: ParcelRecord, userId?: string): Record<string,
     area_sqm: parcel.areaSqm,
     perimeter_m: parcel.perimeterM,
     coordinates: parcel.coordinates,
-    beacons: encodeBeaconsWithPrice(parcel.beacons, parcel.priceUsd),
+    beacons: encodeBeaconsWithPrice(
+      parcel.beacons,
+      parcel.priceUsd,
+      parcel.mapSnapshotUrl,
+      parcel.sellerWallet
+    ),
     spatial_hash: parcel.spatialHash,
     document_hash: parcel.documentHash,
     survey_plan_ref: parcel.surveyPlanRef,
@@ -875,7 +908,14 @@ export async function createParcel(parcel: ParcelRecord, userId?: string): Promi
           parcel.areaSqm,
           parcel.perimeterM,
           JSON.stringify(parcel.coordinates),
-          JSON.stringify(encodeBeaconsWithPrice(parcel.beacons, parcel.priceUsd)),
+          JSON.stringify(
+            encodeBeaconsWithPrice(
+              parcel.beacons,
+              parcel.priceUsd,
+              parcel.mapSnapshotUrl,
+              parcel.sellerWallet
+            )
+          ),
           parcel.spatialHash,
           parcel.documentHash,
           parcel.surveyPlanRef,

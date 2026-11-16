@@ -29,6 +29,8 @@ export interface ParcelRecord {
   surveyPlanRef: string;
   intendedUse: 'Residential' | 'Commercial' | 'Agricultural' | 'Industrial' | 'Public Utility';
   priceUsd?: number;
+  sellerWallet?: string;
+  mapSnapshotUrl?: string;
   status: 'draft' | 'spatial_verified' | 'oracle_verified' | 'legal_approved' | 'registered' | 'revoked' | 'rejected';
   tokenId?: number;
   txHash?: string;
@@ -110,12 +112,15 @@ export interface VerifiedLandListing {
   priceUsd: number;
   intendedUse: ParcelRecord['intendedUse'];
   sellerName: string;
+  sellerWallet?: string;
   surveyPlanRef: string;
   spatialHash: string;
   tokenId: number;
   verificationBadge: string;
   landmark: string;
   imageUrl: string;
+  coordinates?: [number, number][];
+  isOsmSnapshot?: boolean;
 }
 
 export type PortalStepId = 'citizen' | 'surveyor' | 'oracle';
