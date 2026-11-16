@@ -118,7 +118,27 @@ export default function App() {
     }
   }, [currentUser]);
 
-  const [mqttMessages, setMqttMessages] = useState<MqttMessage[]>(INITIAL_MQTT_MESSAGES);
+  const [mqttMessages, setMqttMessages] = useState<MqttMessage[]>(() => {
+    try {
+      const saved = localStorage.getItem('anagu_mqtt_v1');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {
+      // Fallback to initial messages
+    }
+    return INITIAL_MQTT_MESSAGES;
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('anagu_mqtt_v1', JSON.stringify(mqttMessages));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, [mqttMessages]);
+
   const [selectedFrameId, setSelectedFrameId] = useState<FigmaFrameId>('frame-landing');
   const [viewMode, setViewMode] = useState<FigmaViewMode>('landing');
   const [authMode, setAuthMode] = useState<AuthMode>('login');
@@ -126,7 +146,7 @@ export default function App() {
   const [activePortalStep, setActivePortalStep] = useState<PortalStepId>('citizen');
   const [activeParcelId, setActiveParcelId] = useState<string>(parcels[1]?.id || parcels[0]?.id || '');
 
-  // Hydrate registry parcels & MQTT log from database on mount, focus, and interval
+  // Hydrate registry parcels & MQTT log from database (or cross-tab storage) on mount, focus, and interval
   // so Admin verification/rejection/revocation updates reflect on Access Lands live
   useEffect(() => {
     let active = true;
@@ -155,13 +175,26 @@ export default function App() {
       }
     };
 
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === STORAGE_KEY && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          if (Array.isArray(parsed)) setParcels(parsed);
+        } catch {
+          // Ignore malformed storage payload
+        }
+      }
+    };
+
     syncFromBackend();
     const intervalId = window.setInterval(syncFromBackend, 10000);
     window.addEventListener('focus', syncFromBackend);
+    window.addEventListener('storage', handleStorageChange);
     return () => {
       active = false;
       window.clearInterval(intervalId);
       window.removeEventListener('focus', syncFromBackend);
+      window.removeEventListener('storage', handleStorageChange);
     };
   }, []);
   const [activePage, setActivePage] = useState<FigmaPageId>('screens');

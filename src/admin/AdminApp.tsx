@@ -224,15 +224,16 @@ export const AdminApp: React.FC = () => {
   }, [clearSession]);
 
   // Initial overview load + live auto-polling
+  const adminUserId = adminUser?.id;
   useEffect(() => {
-    if (!adminUser) return;
+    if (!adminUserId) return;
     void fetchOverview(false);
     if (!autoSync) return;
     const timer = window.setInterval(() => {
       void fetchOverview(true);
     }, 8000);
     return () => window.clearInterval(timer);
-  }, [adminUser, autoSync, fetchOverview]);
+  }, [adminUserId, autoSync, fetchOverview]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();

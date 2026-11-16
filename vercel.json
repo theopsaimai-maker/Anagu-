@@ -1,7 +1,6 @@
 {
   "rewrites": [
     { "source": "/admin", "destination": "/admin.html" },
-    { "source": "/admin/(.*)", "destination": "/admin.html" },
-    { "source": "/((?!assets/|api/).*)", "destination": "/index.html" }
+    { "source": "/admin/:path*", "destination": "/admin.html" }
   ]
 }
