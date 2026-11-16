@@ -28,6 +28,7 @@ export interface ParcelRecord {
   documentHash: string; // SHA-256
   surveyPlanRef: string;
   intendedUse: 'Residential' | 'Commercial' | 'Agricultural' | 'Industrial' | 'Public Utility';
+  priceUsd?: number;
   status: 'draft' | 'spatial_verified' | 'oracle_verified' | 'legal_approved' | 'registered' | 'revoked' | 'rejected';
   tokenId?: number;
   txHash?: string;
@@ -96,7 +97,26 @@ export interface StorageOverheadField {
 }
 
 // Figma Design Environment & Portal Workflow Types
-export type FigmaViewMode = 'canvas' | 'prototype' | 'specs' | 'landing' | 'portal' | 'auth';
+export type FigmaViewMode = 'canvas' | 'prototype' | 'specs' | 'landing' | 'portal' | 'auth' | 'lands';
+
+export interface VerifiedLandListing {
+  id: string;
+  cadastralRef: string;
+  title: string;
+  district: string;
+  state: string;
+  lga: string;
+  areaSqm: number;
+  priceUsd: number;
+  intendedUse: ParcelRecord['intendedUse'];
+  sellerName: string;
+  surveyPlanRef: string;
+  spatialHash: string;
+  tokenId: number;
+  verificationBadge: string;
+  landmark: string;
+  imageUrl: string;
+}
 
 export type PortalStepId = 'citizen' | 'surveyor' | 'oracle';
 

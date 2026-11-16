@@ -29,13 +29,14 @@ import { FigmaCanvas } from './components/figma/FigmaCanvas';
 import { FigmaPrototypePlayer } from './components/figma/FigmaPrototypePlayer';
 import { ScreenDesignTokens } from './components/screens/ScreenDesignTokens';
 import { ScreenLandingPage } from './components/screens/ScreenLandingPage';
+import { ScreenVerifiedLands } from './components/screens/ScreenVerifiedLands';
 import { ScreenAuth, INITIAL_DEMO_ACCOUNTS, StoredAuthAccount } from './components/screens/ScreenAuth';
 import { ScreenCitizenPortal } from './components/screens/ScreenCitizenPortal';
 import { ScreenSurveyorCadastral } from './components/screens/ScreenSurveyorCadastral';
 import { ScreenCommunityOracle } from './components/screens/ScreenCommunityOracle';
 import { FigmaGuidedTour, TOUR_STEPS } from './components/figma/FigmaGuidedTour';
 import { FigmaShortcutsModal } from './components/figma/FigmaShortcutsModal';
-import { Home, FileText, Compass, Users, Layers, LogOut } from 'lucide-react';
+import { Home } from 'lucide-react';
 import {
   apiApproveOracle,
   apiApproveSpatial,
@@ -357,12 +358,13 @@ export default function App() {
   // Pure Website View: When in 'landing' mode, render the actual public website directly with no editor chrome!
   if (viewMode === 'landing') {
     return (
-      <div className="w-screen h-screen overflow-y-auto bg-[#070b12] text-slate-100 font-sans selection:bg-emerald-500/30 selection:text-emerald-300">
+      <div className="min-h-screen w-full overflow-x-hidden bg-[#070b12] text-slate-100 font-sans selection:bg-emerald-500/30 selection:text-emerald-300">
         <ScreenLandingPage
           parcels={parcels}
           currentUser={currentUser}
           onOpenPortal={handleOpenPortal}
           onOpenAuth={handleOpenAuth}
+          onOpenLands={() => setViewMode('lands')}
           onOpenPrototype={() => {
             setSelectedFrameId('frame-citizen');
             setViewMode('prototype');
@@ -376,10 +378,30 @@ export default function App() {
     );
   }
 
+  // Verified Lands Marketplace View (3 columns x 3 rows)
+  if (viewMode === 'lands') {
+    return (
+      <div className="min-h-screen w-full overflow-x-hidden bg-[#070b12] text-slate-100 font-sans selection:bg-emerald-500/30 selection:text-emerald-300">
+        <ScreenVerifiedLands
+          parcels={parcels}
+          currentUser={currentUser}
+          onBackToLanding={() => setViewMode('landing')}
+          onOpenRegister={() => {
+            if (currentUser) {
+              handleOpenPortal('citizen');
+            } else {
+              handleOpenAuth('login', 'citizen');
+            }
+          }}
+        />
+      </div>
+    );
+  }
+
   // Dedicated Login & Sign Up Page View
   if (viewMode === 'auth') {
     return (
-      <div className="w-screen h-screen overflow-y-auto bg-[#070b12] text-slate-100 font-sans selection:bg-emerald-500/30 selection:text-emerald-300">
+      <div className="min-h-screen w-full overflow-x-hidden bg-[#070b12] text-slate-100 font-sans selection:bg-emerald-500/30 selection:text-emerald-300">
         <ScreenAuth
           key={`${authMode}-${authRole}`}
           initialMode={authMode}
@@ -393,15 +415,12 @@ export default function App() {
     );
   }
 
-  // Clean 4-Step Live Portal Workflow Mode (1. Public Landing -> 2. Citizen Portal -> 3. Surveyor GIS Map -> 4. Community Oracle)
+  // Clean Live Portal View
   if (viewMode === 'portal') {
-    const pendingSpatialCount = parcels.filter(p => p.status === 'draft').length;
-    const pendingOracleCount = parcels.filter(p => p.status === 'spatial_verified').length;
-
     return (
-      <div className="w-screen h-screen flex flex-col bg-slate-950 text-slate-100 overflow-hidden font-sans">
-        {/* Clean Step-by-Step Workflow Header */}
-        <header className="bg-[#070b12] border-b border-slate-800 px-4 lg:px-8 h-16 flex items-center justify-between gap-4 shrink-0 z-40">
+      <div className="min-h-screen w-full flex flex-col bg-slate-950 text-slate-100 overflow-x-hidden font-sans">
+        {/* Clean Portal Header */}
+        <header className="sticky top-0 bg-[#070b12]/95 backdrop-blur-md border-b border-slate-800 px-4 lg:px-8 h-16 flex items-center justify-between gap-4 shrink-0 z-40">
           {/* Brand Avatar */}
           <button
             onClick={() => setViewMode('landing')}
@@ -423,103 +442,16 @@ export default function App() {
             </div>
           </button>
 
-          {/* 1 -> 2 -> 3 -> 4 Step Navigation */}
-          <nav className="flex items-center gap-1.5 overflow-x-auto py-1">
-            <button
-              onClick={() => setViewMode('landing')}
-              className="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800/80 transition-colors flex items-center gap-1.5 shrink-0"
-            >
-              <Home className="w-3.5 h-3.5 text-emerald-400" />
-              <span>1. Public Landing</span>
-            </button>
-
-            <span className="text-slate-600 text-xs">/</span>
-
-            <button
-              onClick={() => setActivePortalStep('citizen')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5 shrink-0 ${
-                activePortalStep === 'citizen'
-                  ? 'bg-emerald-600 text-white shadow-sm'
-                  : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
-              }`}
-            >
-              <FileText className="w-3.5 h-3.5" />
-              <span>2. Citizen Portal</span>
-            </button>
-
-            <span className="text-slate-600 text-xs">/</span>
-
-            <button
-              onClick={() => setActivePortalStep('surveyor')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5 shrink-0 ${
-                activePortalStep === 'surveyor'
-                  ? 'bg-sky-600 text-white shadow-sm'
-                  : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
-              }`}
-            >
-              <Compass className="w-3.5 h-3.5" />
-              <span>3. Surveyor GIS Map</span>
-              {pendingSpatialCount > 0 && (
-                <span className="px-1.5 py-0.5 text-[10px] rounded-full bg-slate-900/80 text-sky-300 font-mono">
-                  {pendingSpatialCount}
-                </span>
-              )}
-            </button>
-
-            <span className="text-slate-600 text-xs">/</span>
-
-            <button
-              onClick={() => setActivePortalStep('oracle')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5 shrink-0 ${
-                activePortalStep === 'oracle'
-                  ? 'bg-amber-600 text-white shadow-sm'
-                  : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
-              }`}
-            >
-              <Users className="w-3.5 h-3.5" />
-              <span>4. Community Oracle</span>
-              {pendingOracleCount > 0 && (
-                <span className="px-1.5 py-0.5 text-[10px] rounded-full bg-slate-900/80 text-amber-300 font-mono">
-                  {pendingOracleCount}
-                </span>
-              )}
-            </button>
-          </nav>
-
-          {/* Right: Signed-In User & Actions */}
+          {/* Right: Portal Actions */}
           <div className="flex items-center gap-2 shrink-0">
-            {currentUser && (
-              <div className="hidden lg:flex items-center gap-2 pr-2 text-xs text-slate-300">
-                <span className="font-semibold text-white whitespace-nowrap">{currentUser.fullName}</span>
-                <span className="text-slate-600">&middot;</span>
-                <span className="text-emerald-400 font-mono whitespace-nowrap">{currentUser.credentialId}</span>
-              </div>
-            )}
-            <button
-              type="button"
-              onClick={() => {
-                setViewMode('canvas');
-                handleFocusFrame(
-                  activePortalStep === 'citizen'
-                    ? 'frame-citizen'
-                    : activePortalStep === 'surveyor'
-                      ? 'frame-surveyor'
-                      : 'frame-oracle'
-                );
-              }}
-              className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-xs font-medium text-slate-300 hover:text-white transition-colors shrink-0 whitespace-nowrap"
-            >
-              <Layers className="w-3.5 h-3.5 text-slate-400" />
-              <span>Design Studio</span>
-            </button>
             {currentUser ? (
               <button
                 type="button"
-                onClick={handleSignOut}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-red-950/60 border border-slate-700 hover:border-red-700/70 text-xs font-medium text-slate-300 hover:text-red-200 transition-colors shrink-0 whitespace-nowrap"
+                onClick={() => setViewMode('landing')}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-emerald-950/60 border border-slate-700 hover:border-emerald-500/60 text-xs font-medium text-slate-200 hover:text-emerald-300 transition-colors shrink-0 whitespace-nowrap"
               >
-                <LogOut className="w-3.5 h-3.5" />
-                <span>Sign Out</span>
+                <Home className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Home</span>
               </button>
             ) : (
               <button
@@ -534,7 +466,7 @@ export default function App() {
         </header>
 
         {/* Active Portal Screen */}
-        <main className="flex-1 overflow-hidden">
+        <main className="flex-1 flex flex-col">
           {activePortalStep === 'citizen' && (
             <ScreenCitizenPortal
               parcels={parcels}

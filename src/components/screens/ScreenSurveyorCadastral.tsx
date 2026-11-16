@@ -91,40 +91,6 @@ export const ScreenSurveyorCadastral: React.FC<Props> = ({
 
   return (
     <div className="w-full h-full bg-slate-900 text-slate-100 flex flex-col overflow-y-auto">
-      {/* Top Header Bar */}
-      <div className="bg-slate-950 border-b border-slate-800 px-8 py-3.5 flex items-center justify-between shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 flex items-center justify-center">
-            <Compass className="w-4 h-4" />
-          </div>
-          <div>
-            <div className="text-sm font-bold text-white tracking-tight flex items-center gap-2">
-              Cadastral Spatial Verification Console
-              <span className="text-xs font-mono font-normal text-emerald-400">PostGIS 3.4 / GEOS 3.12</span>
-            </div>
-            <div className="text-xs text-slate-400">
-              Surveyor General Directorate · Spatial Invariant Engine
-            </div>
-          </div>
-        </div>
-
-        {/* Selected Parcel Switcher */}
-        <div className="flex items-center gap-3">
-          <label className="text-xs text-slate-400 font-medium hidden sm:block">Active Inspection Dossier:</label>
-          <select 
-            value={selectedParcelId}
-            onChange={(e) => handleSelectParcelId(e.target.value)}
-            className="bg-slate-900 border border-slate-700 text-slate-200 text-xs rounded-lg px-3 py-1.5 font-mono focus:outline-emerald-500"
-          >
-            {parcels.map(p => (
-              <option key={p.id} value={p.id}>
-                {p.cadastralRef} ({p.applicantName.split(' ')[0]}) - {p.status}
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
-
       {/* Main Workspace Layout */}
       <div className="flex-1 p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left Cadastral Map Viewport (7 cols) */}
