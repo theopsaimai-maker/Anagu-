@@ -828,13 +828,21 @@ async function startServer() {
   });
 
   // Frontend Serving (Vite dev middlewares in development, dist/ static files in production)
+  const isAdminHost = (hostname: string | undefined) => {
+    const h = (hostname || '').toLowerCase();
+    return h.startsWith('admin.') || h.includes('.admin.') || h.includes('-admin.');
+  };
+  const isAdminPath = (reqPath: string) =>
+    reqPath === '/admin' || reqPath === '/admin/' || reqPath.startsWith('/admin/');
+
   const isProduction = process.env.NODE_ENV === 'production';
   if (!isProduction) {
-    // Route /admin and /admin/* to the separate standalone admin.html entry point
+    // Route /admin, /admin/*, or admin.* / -admin.* subdomains to admin.html
     app.use((req, _res, next) => {
       if (
         req.method === 'GET' &&
-        (req.path === '/admin' || req.path === '/admin/' || req.path.startsWith('/admin/'))
+        !req.path.startsWith('/api/') &&
+        (isAdminPath(req.path) || ((req.path === '/' || req.path === '/index.html') && isAdminHost(req.hostname)))
       ) {
         req.url = '/admin.html';
       }
@@ -907,6 +915,9 @@ export class ErrorOverlay extends HTMLElement {}
     app.get('*', (req, res) => {
       if (req.path.startsWith('/api/')) {
         return res.status(404).json({ error: 'API route not found.' });
+      }
+      if (isAdminHost(req.hostname)) {
+        return res.sendFile(path.join(distDir, 'admin.html'));
       }
       return res.sendFile(path.join(distDir, 'index.html'));
     });
