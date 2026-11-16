@@ -265,6 +265,9 @@ const SEED_MQTT: MqttMessage[] = [
 const globalStore = globalThis as unknown as {
   _anaguPgPool?: Pool | null;
   _anaguPgPoolUrl?: string;
+  _anaguPgDisabledUntil?: number;
+  _anaguPgWarned?: boolean;
+  _anaguSupabaseWarned?: boolean;
   _anaguSchemaPromise?: Promise<void> | null;
   _anaguMemoryUsers?: StoredUserRow[];
   _anaguMemoryParcels?: ParcelRecord[];
@@ -326,6 +329,84 @@ class SupabaseTableMissingError extends Error {
   }
 }
 
+function isTransientConnectionError(err: unknown, depth = 0): boolean {
+  if (!err || depth > 2) return false;
+  const anyErr = err as { name?: string; code?: string; message?: string; cause?: unknown };
+  const name = String(anyErr.name || '');
+  const code = String(anyErr.code || '');
+  const msg = String(anyErr.message || err || '').toLowerCase();
+
+  if (name === 'AbortError' || name === 'TimeoutError') return true;
+  if (
+    [
+      'ETIMEDOUT',
+      'ECONNREFUSED',
+      'ECONNRESET',
+      'EHOSTUNREACH',
+      'ENETUNREACH',
+      'ENOTFOUND',
+      'EAI_AGAIN',
+      'EPIPE',
+      '08000',
+      '08001',
+      '08003',
+      '08004',
+      '08006',
+      '57P01',
+      '57P02',
+      '57P03'
+    ].includes(code)
+  ) {
+    return true;
+  }
+  if (
+    msg.includes('connection terminated') ||
+    msg.includes('timeout') ||
+    msg.includes('timed out') ||
+    msg.includes('econnrefused') ||
+    msg.includes('etimedout') ||
+    msg.includes('ehostunreach') ||
+    msg.includes('enetunreach') ||
+    msg.includes('enotfound') ||
+    msg.includes('fetch failed') ||
+    msg.includes('socket hang up') ||
+    msg.includes('connection reset') ||
+    msg.includes('too many clients') ||
+    msg.includes('aborted')
+  ) {
+    return true;
+  }
+  if (anyErr.cause) {
+    return isTransientConnectionError(anyErr.cause, depth + 1);
+  }
+  return false;
+}
+
+function tripPgCircuit(err: unknown, context: string): void {
+  globalStore._anaguPgDisabledUntil = Date.now() + 600_000;
+  globalStore._anaguSchemaPromise = null;
+  if (!globalStore._anaguPgWarned) {
+    globalStore._anaguPgWarned = true;
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[anagu/db] PostgreSQL unavailable during ${context} (${msg}); falling back to Supabase REST / resilient store.`);
+  }
+}
+
+function shouldFallbackFromSupabase(err: unknown, context: string): boolean {
+  if (err instanceof SupabaseTableMissingError) {
+    return true;
+  }
+  if (isTransientConnectionError(err)) {
+    if (!globalStore._anaguSupabaseWarned) {
+      globalStore._anaguSupabaseWarned = true;
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[anagu/db] Supabase REST transient error during ${context} (${msg}); using in-memory store.`);
+    }
+    return true;
+  }
+  return false;
+}
+
 async function supabaseRest<T>(
   path: string,
   options?: { method?: string; body?: unknown; prefer?: string }
@@ -346,7 +427,8 @@ async function supabaseRest<T>(
   const res = await fetch(`${cfg.url}/rest/v1/${path}`, {
     method: options?.method || 'GET',
     headers,
-    body: options?.body !== undefined ? JSON.stringify(options.body) : undefined
+    body: options?.body !== undefined ? JSON.stringify(options.body) : undefined,
+    signal: AbortSignal.timeout(6000)
   });
 
   const text = await res.text();
@@ -374,15 +456,23 @@ function getPool(): Pool | null {
   if (!isDatabaseConfigured()) {
     return null;
   }
+  if (globalStore._anaguPgDisabledUntil && Date.now() < globalStore._anaguPgDisabledUntil) {
+    return null;
+  }
   const url = process.env.DATABASE_URL!.trim();
   if (!globalStore._anaguPgPool || globalStore._anaguPgPoolUrl !== url) {
-    globalStore._anaguPgPool = new Pool({
+    const pool = new Pool({
       connectionString: url,
       ssl: shouldUseSsl(url) ? { rejectUnauthorized: false } : undefined,
       max: 10,
       idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 10000
+      connectionTimeoutMillis: 4000,
+      query_timeout: 5000
     });
+    pool.on('error', (err) => {
+      tripPgCircuit(err, 'idle client');
+    });
+    globalStore._anaguPgPool = pool;
     globalStore._anaguPgPoolUrl = url;
     globalStore._anaguSchemaPromise = null;
   }
@@ -419,7 +509,31 @@ function mapUserRow(row: StoredUserRow): AuthUser {
   };
 }
 
+function encodeBeaconsWithPrice(
+  beacons: ParcelRecord['beacons'],
+  priceUsd?: number
+): Array<Record<string, unknown>> {
+  const safeBeacons = Array.isArray(beacons) ? beacons : [];
+  if (typeof priceUsd !== 'number' || !Number.isFinite(priceUsd) || priceUsd <= 0) {
+    return safeBeacons.map((b) => ({ ...b }));
+  }
+  if (safeBeacons.length === 0) {
+    return [{ id: 'META-1', name: 'PB 1', lat: 0, lng: 0, easting: 0, northing: 0, elevation: 0, priceUsd }];
+  }
+  return safeBeacons.map((b, idx) => (idx === 0 ? { ...b, priceUsd } : { ...b }));
+}
+
 function mapParcelRow(row: StoredParcelRow): ParcelRecord {
+  const rawBeacons = Array.isArray(row.beacons) ? (row.beacons as Array<ParcelRecord['beacons'][number] & { priceUsd?: unknown }>) : [];
+  const extractedPrice =
+    typeof rawBeacons[0]?.priceUsd === 'number' && Number.isFinite(rawBeacons[0].priceUsd) && rawBeacons[0].priceUsd > 0
+      ? rawBeacons[0].priceUsd
+      : undefined;
+
+  const cleanBeacons: ParcelRecord['beacons'] = rawBeacons
+    .filter((b) => b.id !== 'META-1')
+    .map(({ priceUsd: _ignored, ...rest }) => rest);
+
   const parcel: ParcelRecord = {
     id: row.id,
     cadastralRef: row.cadastral_ref,
@@ -431,7 +545,7 @@ function mapParcelRow(row: StoredParcelRow): ParcelRecord {
     areaSqm: Number(row.area_sqm),
     perimeterM: Number(row.perimeter_m),
     coordinates: Array.isArray(row.coordinates) ? row.coordinates : [],
-    beacons: Array.isArray(row.beacons) ? row.beacons : [],
+    beacons: cleanBeacons,
     spatialHash: row.spatial_hash,
     documentHash: row.document_hash,
     surveyPlanRef: row.survey_plan_ref,
@@ -439,6 +553,7 @@ function mapParcelRow(row: StoredParcelRow): ParcelRecord {
     status: row.status
   };
 
+  if (extractedPrice !== undefined) parcel.priceUsd = extractedPrice;
   if (row.token_id !== null && row.token_id !== undefined) parcel.tokenId = Number(row.token_id);
   if (row.tx_hash) parcel.txHash = row.tx_hash;
   if (row.block_number !== null && row.block_number !== undefined) parcel.blockNumber = Number(row.block_number);
@@ -459,7 +574,7 @@ function toParcelDbRecord(parcel: ParcelRecord, userId?: string): Record<string,
     area_sqm: parcel.areaSqm,
     perimeter_m: parcel.perimeterM,
     coordinates: parcel.coordinates,
-    beacons: parcel.beacons,
+    beacons: encodeBeaconsWithPrice(parcel.beacons, parcel.priceUsd),
     spatial_hash: parcel.spatialHash,
     document_hash: parcel.documentHash,
     survey_plan_ref: parcel.surveyPlanRef,
@@ -665,9 +780,14 @@ export async function getDatabaseHealth(): Promise<{
 }> {
   const pool = getPool();
   if (pool) {
-    await ensureSchema(pool);
-    await pool.query('SELECT 1');
-    return { ok: true, mode: 'postgresql' };
+    try {
+      await ensureSchema(pool);
+      await pool.query('SELECT 1');
+      return { ok: true, mode: 'postgresql' };
+    } catch (err) {
+      if (!isTransientConnectionError(err)) throw err;
+      tripPgCircuit(err, 'health check');
+    }
   }
 
   if (isSupabaseRestConfigured()) {
@@ -677,6 +797,9 @@ export async function getDatabaseHealth(): Promise<{
     } catch (err) {
       if (err instanceof SupabaseTableMissingError) {
         return { ok: true, mode: 'supabase_pending_schema' };
+      }
+      if (shouldFallbackFromSupabase(err, 'health check')) {
+        return { ok: true, mode: 'memory' };
       }
       throw err;
     }
@@ -688,11 +811,16 @@ export async function getDatabaseHealth(): Promise<{
 export async function listParcels(): Promise<ParcelRecord[]> {
   const pool = getPool();
   if (pool) {
-    await ensureSchema(pool);
-    const res = await pool.query<StoredParcelRow>(
-      `SELECT * FROM public.anagu_parcels ORDER BY created_at DESC, id ASC`
-    );
-    return res.rows.map(mapParcelRow);
+    try {
+      await ensureSchema(pool);
+      const res = await pool.query<StoredParcelRow>(
+        `SELECT * FROM public.anagu_parcels ORDER BY created_at DESC, id ASC`
+      );
+      return res.rows.map(mapParcelRow);
+    } catch (err) {
+      if (!isTransientConnectionError(err)) throw err;
+      tripPgCircuit(err, 'listParcels');
+    }
   }
 
   if (isSupabaseRestConfigured()) {
@@ -702,7 +830,7 @@ export async function listParcels(): Promise<ParcelRecord[]> {
       );
       return rows.map(mapParcelRow);
     } catch (err) {
-      if (err instanceof SupabaseTableMissingError) {
+      if (shouldFallbackFromSupabase(err, 'listParcels')) {
         return getMemoryParcels();
       }
       throw err;
@@ -715,52 +843,57 @@ export async function listParcels(): Promise<ParcelRecord[]> {
 export async function createParcel(parcel: ParcelRecord, userId?: string): Promise<ParcelRecord> {
   const pool = getPool();
   if (pool) {
-    await ensureSchema(pool);
-    const res = await pool.query<StoredParcelRow>(
-      `
-      INSERT INTO public.anagu_parcels (
-        id, cadastral_ref, applicant_name, applicant_nin, state, lga, district,
-        area_sqm, perimeter_m, coordinates, beacons, spatial_hash, document_hash,
-        survey_plan_ref, intended_use, status, token_id, tx_hash, block_number,
-        issuance_timestamp, revocation_data, created_by_user_id
-      ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7,
-        $8, $9, $10::jsonb, $11::jsonb, $12, $13,
-        $14, $15, $16, $17, $18, $19,
-        $20, $21::jsonb, $22
-      )
-      ON CONFLICT (id) DO UPDATE SET
-        applicant_name = EXCLUDED.applicant_name,
-        status = EXCLUDED.status,
-        updated_at = NOW()
-      RETURNING *
-      `,
-      [
-        parcel.id,
-        parcel.cadastralRef,
-        parcel.applicantName,
-        parcel.applicantNin,
-        parcel.state,
-        parcel.lga,
-        parcel.district,
-        parcel.areaSqm,
-        parcel.perimeterM,
-        JSON.stringify(parcel.coordinates),
-        JSON.stringify(parcel.beacons),
-        parcel.spatialHash,
-        parcel.documentHash,
-        parcel.surveyPlanRef,
-        parcel.intendedUse,
-        parcel.status,
-        parcel.tokenId ?? null,
-        parcel.txHash ?? null,
-        parcel.blockNumber ?? null,
-        parcel.issuanceTimestamp ?? null,
-        parcel.revocationData ? JSON.stringify(parcel.revocationData) : null,
-        userId ?? null
-      ]
-    );
-    return mapParcelRow(res.rows[0]);
+    try {
+      await ensureSchema(pool);
+      const res = await pool.query<StoredParcelRow>(
+        `
+        INSERT INTO public.anagu_parcels (
+          id, cadastral_ref, applicant_name, applicant_nin, state, lga, district,
+          area_sqm, perimeter_m, coordinates, beacons, spatial_hash, document_hash,
+          survey_plan_ref, intended_use, status, token_id, tx_hash, block_number,
+          issuance_timestamp, revocation_data, created_by_user_id
+        ) VALUES (
+          $1, $2, $3, $4, $5, $6, $7,
+          $8, $9, $10::jsonb, $11::jsonb, $12, $13,
+          $14, $15, $16, $17, $18, $19,
+          $20, $21::jsonb, $22
+        )
+        ON CONFLICT (id) DO UPDATE SET
+          applicant_name = EXCLUDED.applicant_name,
+          status = EXCLUDED.status,
+          updated_at = NOW()
+        RETURNING *
+        `,
+        [
+          parcel.id,
+          parcel.cadastralRef,
+          parcel.applicantName,
+          parcel.applicantNin,
+          parcel.state,
+          parcel.lga,
+          parcel.district,
+          parcel.areaSqm,
+          parcel.perimeterM,
+          JSON.stringify(parcel.coordinates),
+          JSON.stringify(encodeBeaconsWithPrice(parcel.beacons, parcel.priceUsd)),
+          parcel.spatialHash,
+          parcel.documentHash,
+          parcel.surveyPlanRef,
+          parcel.intendedUse,
+          parcel.status,
+          parcel.tokenId ?? null,
+          parcel.txHash ?? null,
+          parcel.blockNumber ?? null,
+          parcel.issuanceTimestamp ?? null,
+          parcel.revocationData ? JSON.stringify(parcel.revocationData) : null,
+          userId ?? null
+        ]
+      );
+      return mapParcelRow(res.rows[0]);
+    } catch (err) {
+      if (!isTransientConnectionError(err)) throw err;
+      tripPgCircuit(err, 'createParcel');
+    }
   }
 
   if (isSupabaseRestConfigured()) {
@@ -772,7 +905,7 @@ export async function createParcel(parcel: ParcelRecord, userId?: string): Promi
       });
       return rows[0] ? mapParcelRow(rows[0]) : parcel;
     } catch (err) {
-      if (!(err instanceof SupabaseTableMissingError)) throw err;
+      if (!shouldFallbackFromSupabase(err, 'createParcel')) throw err;
     }
   }
 
@@ -784,17 +917,22 @@ export async function createParcel(parcel: ParcelRecord, userId?: string): Promi
 export async function updateParcelSpatial(parcelId: string): Promise<ParcelRecord | null> {
   const pool = getPool();
   if (pool) {
-    await ensureSchema(pool);
-    const res = await pool.query<StoredParcelRow>(
-      `
-      UPDATE public.anagu_parcels
-      SET status = 'spatial_verified', updated_at = NOW()
-      WHERE id = $1
-      RETURNING *
-      `,
-      [parcelId]
-    );
-    return res.rows[0] ? mapParcelRow(res.rows[0]) : null;
+    try {
+      await ensureSchema(pool);
+      const res = await pool.query<StoredParcelRow>(
+        `
+        UPDATE public.anagu_parcels
+        SET status = 'spatial_verified', updated_at = NOW()
+        WHERE id = $1
+        RETURNING *
+        `,
+        [parcelId]
+      );
+      return res.rows[0] ? mapParcelRow(res.rows[0]) : null;
+    } catch (err) {
+      if (!isTransientConnectionError(err)) throw err;
+      tripPgCircuit(err, 'updateParcelSpatial');
+    }
   }
 
   if (isSupabaseRestConfigured()) {
@@ -809,7 +947,7 @@ export async function updateParcelSpatial(parcelId: string): Promise<ParcelRecor
       );
       return rows[0] ? mapParcelRow(rows[0]) : null;
     } catch (err) {
-      if (!(err instanceof SupabaseTableMissingError)) throw err;
+      if (!shouldFallbackFromSupabase(err, 'updateParcelSpatial')) throw err;
     }
   }
 
@@ -826,39 +964,44 @@ export async function recordOracleAttestation(
 ): Promise<ParcelRecord | null> {
   const pool = getPool();
   if (pool) {
-    await ensureSchema(pool);
-    const res = await pool.query<StoredParcelRow>(
-      `
-      UPDATE public.anagu_parcels
-      SET status = 'oracle_verified', updated_at = NOW()
-      WHERE id = $1
-      RETURNING *
-      `,
-      [parcelId]
-    );
-    if (!res.rows[0]) return null;
-    const updated = mapParcelRow(res.rows[0]);
+    try {
+      await ensureSchema(pool);
+      const res = await pool.query<StoredParcelRow>(
+        `
+        UPDATE public.anagu_parcels
+        SET status = 'oracle_verified', updated_at = NOW()
+        WHERE id = $1
+        RETURNING *
+        `,
+        [parcelId]
+      );
+      if (!res.rows[0]) return null;
+      const updated = mapParcelRow(res.rows[0]);
 
-    await pool.query(
-      `
-      INSERT INTO public.anagu_oracle_attestations (
-        id, parcel_id, cadastral_ref, affidavit_ref, family_witness, witness_notes,
-        reviewer_id, quorum_percent, attestation_score, outcome
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'Verified')
-      `,
-      [
-        `att-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-        updated.id,
-        updated.cadastralRef,
-        input?.affidavitRef ?? null,
-        input?.familyWitness ?? null,
-        input?.witnessNotes ?? null,
-        input?.reviewerId ?? 'ORACLE_COUNCIL_DEFAULT',
-        input?.quorumPercent ?? 100,
-        input?.attestationScore ?? 98
-      ]
-    );
-    return updated;
+      await pool.query(
+        `
+        INSERT INTO public.anagu_oracle_attestations (
+          id, parcel_id, cadastral_ref, affidavit_ref, family_witness, witness_notes,
+          reviewer_id, quorum_percent, attestation_score, outcome
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'Verified')
+        `,
+        [
+          `att-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+          updated.id,
+          updated.cadastralRef,
+          input?.affidavitRef ?? null,
+          input?.familyWitness ?? null,
+          input?.witnessNotes ?? null,
+          input?.reviewerId ?? 'ORACLE_COUNCIL_DEFAULT',
+          input?.quorumPercent ?? 100,
+          input?.attestationScore ?? 98
+        ]
+      );
+      return updated;
+    } catch (err) {
+      if (!isTransientConnectionError(err)) throw err;
+      tripPgCircuit(err, 'recordOracleAttestation');
+    }
   }
 
   if (isSupabaseRestConfigured()) {
@@ -890,7 +1033,7 @@ export async function recordOracleAttestation(
       });
       return updated;
     } catch (err) {
-      if (!(err instanceof SupabaseTableMissingError)) throw err;
+      if (!shouldFallbackFromSupabase(err, 'recordOracleAttestation')) throw err;
     }
   }
 
@@ -913,22 +1056,27 @@ export async function mintParcelTitle(
 
   const pool = getPool();
   if (pool) {
-    await ensureSchema(pool);
-    const res = await pool.query<StoredParcelRow>(
-      `
-      UPDATE public.anagu_parcels
-      SET status = 'registered',
-          token_id = $2,
-          tx_hash = $3,
-          block_number = $4,
-          issuance_timestamp = $5,
-          updated_at = NOW()
-      WHERE id = $1
-      RETURNING *
-      `,
-      [parcelId, tokenId, txHash, finalBlock, finalTs]
-    );
-    return res.rows[0] ? mapParcelRow(res.rows[0]) : null;
+    try {
+      await ensureSchema(pool);
+      const res = await pool.query<StoredParcelRow>(
+        `
+        UPDATE public.anagu_parcels
+        SET status = 'registered',
+            token_id = $2,
+            tx_hash = $3,
+            block_number = $4,
+            issuance_timestamp = $5,
+            updated_at = NOW()
+        WHERE id = $1
+        RETURNING *
+        `,
+        [parcelId, tokenId, txHash, finalBlock, finalTs]
+      );
+      return res.rows[0] ? mapParcelRow(res.rows[0]) : null;
+    } catch (err) {
+      if (!isTransientConnectionError(err)) throw err;
+      tripPgCircuit(err, 'mintParcelTitle');
+    }
   }
 
   if (isSupabaseRestConfigured()) {
@@ -949,7 +1097,7 @@ export async function mintParcelTitle(
       );
       return rows[0] ? mapParcelRow(rows[0]) : null;
     } catch (err) {
-      if (!(err instanceof SupabaseTableMissingError)) throw err;
+      if (!shouldFallbackFromSupabase(err, 'mintParcelTitle')) throw err;
     }
   }
 
@@ -981,19 +1129,24 @@ export async function revokeParcelTitle(
 
   const pool = getPool();
   if (pool) {
-    await ensureSchema(pool);
-    const res = await pool.query<StoredParcelRow>(
-      `
-      UPDATE public.anagu_parcels
-      SET status = 'revoked',
-          revocation_data = $2::jsonb,
-          updated_at = NOW()
-      WHERE id = $1
-      RETURNING *
-      `,
-      [parcelId, JSON.stringify(revocationData)]
-    );
-    return res.rows[0] ? mapParcelRow(res.rows[0]) : null;
+    try {
+      await ensureSchema(pool);
+      const res = await pool.query<StoredParcelRow>(
+        `
+        UPDATE public.anagu_parcels
+        SET status = 'revoked',
+            revocation_data = $2::jsonb,
+            updated_at = NOW()
+        WHERE id = $1
+        RETURNING *
+        `,
+        [parcelId, JSON.stringify(revocationData)]
+      );
+      return res.rows[0] ? mapParcelRow(res.rows[0]) : null;
+    } catch (err) {
+      if (!isTransientConnectionError(err)) throw err;
+      tripPgCircuit(err, 'revokeParcelTitle');
+    }
   }
 
   if (isSupabaseRestConfigured()) {
@@ -1011,7 +1164,7 @@ export async function revokeParcelTitle(
       );
       return rows[0] ? mapParcelRow(rows[0]) : null;
     } catch (err) {
-      if (!(err instanceof SupabaseTableMissingError)) throw err;
+      if (!shouldFallbackFromSupabase(err, 'revokeParcelTitle')) throw err;
     }
   }
 
@@ -1026,11 +1179,16 @@ export async function revokeParcelTitle(
 export async function listMqttMessages(): Promise<MqttMessage[]> {
   const pool = getPool();
   if (pool) {
-    await ensureSchema(pool);
-    const res = await pool.query<StoredMqttRow>(
-      `SELECT * FROM public.anagu_mqtt_events ORDER BY created_at DESC LIMIT 100`
-    );
-    return res.rows.map(mapMqttRow);
+    try {
+      await ensureSchema(pool);
+      const res = await pool.query<StoredMqttRow>(
+        `SELECT * FROM public.anagu_mqtt_events ORDER BY created_at DESC LIMIT 100`
+      );
+      return res.rows.map(mapMqttRow);
+    } catch (err) {
+      if (!isTransientConnectionError(err)) throw err;
+      tripPgCircuit(err, 'listMqttMessages');
+    }
   }
 
   if (isSupabaseRestConfigured()) {
@@ -1040,7 +1198,7 @@ export async function listMqttMessages(): Promise<MqttMessage[]> {
       );
       return rows.map(mapMqttRow);
     } catch (err) {
-      if (!(err instanceof SupabaseTableMissingError)) throw err;
+      if (!shouldFallbackFromSupabase(err, 'listMqttMessages')) throw err;
     }
   }
 
@@ -1050,26 +1208,31 @@ export async function listMqttMessages(): Promise<MqttMessage[]> {
 export async function createMqttMessage(msg: MqttMessage): Promise<MqttMessage> {
   const pool = getPool();
   if (pool) {
-    await ensureSchema(pool);
-    const res = await pool.query<StoredMqttRow>(
-      `
-      INSERT INTO public.anagu_mqtt_events (
-        id, topic, payload, qos, event_timestamp, delivery_latency_ms, status
-      ) VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7)
-      ON CONFLICT (id) DO NOTHING
-      RETURNING *
-      `,
-      [
-        msg.id,
-        msg.topic,
-        JSON.stringify(msg.payload),
-        msg.qos,
-        msg.timestamp,
-        msg.deliveryLatencyMs,
-        msg.status
-      ]
-    );
-    return res.rows[0] ? mapMqttRow(res.rows[0]) : msg;
+    try {
+      await ensureSchema(pool);
+      const res = await pool.query<StoredMqttRow>(
+        `
+        INSERT INTO public.anagu_mqtt_events (
+          id, topic, payload, qos, event_timestamp, delivery_latency_ms, status
+        ) VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7)
+        ON CONFLICT (id) DO NOTHING
+        RETURNING *
+        `,
+        [
+          msg.id,
+          msg.topic,
+          JSON.stringify(msg.payload),
+          msg.qos,
+          msg.timestamp,
+          msg.deliveryLatencyMs,
+          msg.status
+        ]
+      );
+      return res.rows[0] ? mapMqttRow(res.rows[0]) : msg;
+    } catch (err) {
+      if (!isTransientConnectionError(err)) throw err;
+      tripPgCircuit(err, 'createMqttMessage');
+    }
   }
 
   if (isSupabaseRestConfigured()) {
@@ -1089,7 +1252,7 @@ export async function createMqttMessage(msg: MqttMessage): Promise<MqttMessage> 
       });
       return rows[0] ? mapMqttRow(rows[0]) : msg;
     } catch (err) {
-      if (!(err instanceof SupabaseTableMissingError)) throw err;
+      if (!shouldFallbackFromSupabase(err, 'createMqttMessage')) throw err;
     }
   }
 
@@ -1104,16 +1267,21 @@ export async function createInquiry(input: InquiryInput): Promise<{ id: string; 
 
   const pool = getPool();
   if (pool) {
-    await ensureSchema(pool);
-    await pool.query(
-      `
-      INSERT INTO public.anagu_inquiries (
-        id, full_name, phone, email, state_jurisdiction, message
-      ) VALUES ($1, $2, $3, $4, $5, $6)
-      `,
-      [id, input.name, input.phone, input.email ?? null, input.state, input.message ?? null]
-    );
-    return { id, createdAt };
+    try {
+      await ensureSchema(pool);
+      await pool.query(
+        `
+        INSERT INTO public.anagu_inquiries (
+          id, full_name, phone, email, state_jurisdiction, message
+        ) VALUES ($1, $2, $3, $4, $5, $6)
+        `,
+        [id, input.name, input.phone, input.email ?? null, input.state, input.message ?? null]
+      );
+      return { id, createdAt };
+    } catch (err) {
+      if (!isTransientConnectionError(err)) throw err;
+      tripPgCircuit(err, 'createInquiry');
+    }
   }
 
   if (isSupabaseRestConfigured()) {
@@ -1131,7 +1299,7 @@ export async function createInquiry(input: InquiryInput): Promise<{ id: string; 
       });
       return { id, createdAt };
     } catch (err) {
-      if (!(err instanceof SupabaseTableMissingError)) throw err;
+      if (!shouldFallbackFromSupabase(err, 'createInquiry')) throw err;
     }
   }
 
@@ -1147,34 +1315,43 @@ export async function signupUser(input: SignupInput): Promise<{ user?: AuthUser;
 
   const pool = getPool();
   if (pool) {
-    await ensureSchema(pool);
-    const existing = await pool.query<{ id: string }>(
-      `SELECT id FROM public.anagu_users WHERE LOWER(email) = LOWER($1) LIMIT 1`,
-      [normalizedEmail]
-    );
-    if (existing.rows.length > 0) {
-      return { error: 'An account with this email already exists. Please sign in instead.' };
-    }
+    try {
+      await ensureSchema(pool);
+      const existing = await pool.query<{ id: string }>(
+        `SELECT id FROM public.anagu_users WHERE LOWER(email) = LOWER($1) LIMIT 1`,
+        [normalizedEmail]
+      );
+      if (existing.rows.length > 0) {
+        return { error: 'An account with this email already exists. Please sign in instead.' };
+      }
 
-    const res = await pool.query<StoredUserRow>(
-      `
-      INSERT INTO public.anagu_users (
-        id, full_name, email, phone, role, state_jurisdiction, credential_id, password_hash
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-      RETURNING *
-      `,
-      [
-        id,
-        input.fullName.trim(),
-        normalizedEmail,
-        input.phone.trim(),
-        input.role,
-        input.state,
-        input.credentialId.trim(),
-        passwordHash
-      ]
-    );
-    return { user: mapUserRow(res.rows[0]) };
+      const res = await pool.query<StoredUserRow>(
+        `
+        INSERT INTO public.anagu_users (
+          id, full_name, email, phone, role, state_jurisdiction, credential_id, password_hash
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING *
+        `,
+        [
+          id,
+          input.fullName.trim(),
+          normalizedEmail,
+          input.phone.trim(),
+          input.role,
+          input.state,
+          input.credentialId.trim(),
+          passwordHash
+        ]
+      );
+      return { user: mapUserRow(res.rows[0]) };
+    } catch (err) {
+      const code = (err as { code?: string })?.code;
+      if (code === '23505') {
+        return { error: 'An account with this email already exists. Please sign in instead.' };
+      }
+      if (!isTransientConnectionError(err)) throw err;
+      tripPgCircuit(err, 'signupUser');
+    }
   }
 
   if (isSupabaseRestConfigured()) {
@@ -1201,7 +1378,7 @@ export async function signupUser(input: SignupInput): Promise<{ user?: AuthUser;
       });
       return { user: mapUserRow(rows[0]) };
     } catch (err) {
-      if (!(err instanceof SupabaseTableMissingError)) throw err;
+      if (!shouldFallbackFromSupabase(err, 'signupUser')) throw err;
     }
   }
 
@@ -1232,19 +1409,24 @@ export async function loginUser(
   const pool = getPool();
 
   if (pool) {
-    await ensureSchema(pool);
-    const res = await pool.query<StoredUserRow>(
-      `SELECT * FROM public.anagu_users WHERE LOWER(email) = LOWER($1) LIMIT 1`,
-      [normalizedEmail]
-    );
-    const found = res.rows[0];
-    if (!found) {
-      return { error: 'No Anagu account was found for that email. Switch to Create Account to register.' };
+    try {
+      await ensureSchema(pool);
+      const res = await pool.query<StoredUserRow>(
+        `SELECT * FROM public.anagu_users WHERE LOWER(email) = LOWER($1) LIMIT 1`,
+        [normalizedEmail]
+      );
+      const found = res.rows[0];
+      if (!found) {
+        return { error: 'No Anagu account was found for that email. Switch to Create Account to register.' };
+      }
+      if (!verifyPassword(password, found.password_hash)) {
+        return { error: 'Incorrect password. Please check your password or use a verified sample profile below.' };
+      }
+      return { user: mapUserRow(found) };
+    } catch (err) {
+      if (!isTransientConnectionError(err)) throw err;
+      tripPgCircuit(err, 'loginUser');
     }
-    if (!verifyPassword(password, found.password_hash)) {
-      return { error: 'Incorrect password. Please check your password or use a verified sample profile below.' };
-    }
-    return { user: mapUserRow(found) };
   }
 
   if (isSupabaseRestConfigured()) {
@@ -1261,7 +1443,7 @@ export async function loginUser(
       }
       return { user: mapUserRow(found) };
     } catch (err) {
-      if (!(err instanceof SupabaseTableMissingError)) throw err;
+      if (!shouldFallbackFromSupabase(err, 'loginUser')) throw err;
     }
   }
 
@@ -1278,16 +1460,21 @@ export async function loginUser(
 export async function loginDemoRole(role: AccessRoleId): Promise<AuthUser> {
   const pool = getPool();
   if (pool) {
-    await ensureSchema(pool);
-    const res = await pool.query<StoredUserRow>(
-      `SELECT * FROM public.anagu_users WHERE role = $1 ORDER BY created_at ASC LIMIT 1`,
-      [role]
-    );
-    if (res.rows[0]) {
-      return mapUserRow(res.rows[0]);
+    try {
+      await ensureSchema(pool);
+      const res = await pool.query<StoredUserRow>(
+        `SELECT * FROM public.anagu_users WHERE role = $1 ORDER BY created_at ASC LIMIT 1`,
+        [role]
+      );
+      if (res.rows[0]) {
+        return mapUserRow(res.rows[0]);
+      }
+      const fallback = SEED_USERS.find((u) => u.role === role) || SEED_USERS[0];
+      return mapUserRow(fallback);
+    } catch (err) {
+      if (!isTransientConnectionError(err)) throw err;
+      tripPgCircuit(err, 'loginDemoRole');
     }
-    const fallback = SEED_USERS.find((u) => u.role === role) || SEED_USERS[0];
-    return mapUserRow(fallback);
   }
 
   if (isSupabaseRestConfigured()) {
@@ -1299,7 +1486,7 @@ export async function loginDemoRole(role: AccessRoleId): Promise<AuthUser> {
         return mapUserRow(rows[0]);
       }
     } catch (err) {
-      if (!(err instanceof SupabaseTableMissingError)) throw err;
+      if (!shouldFallbackFromSupabase(err, 'loginDemoRole')) throw err;
     }
   }
 

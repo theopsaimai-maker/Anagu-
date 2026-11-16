@@ -14,7 +14,7 @@ import {
   Landmark
 } from 'lucide-react';
 import { AuthUser, ParcelRecord, VerifiedLandListing } from '../../types/anagu';
-import { VERIFIED_LANDS_FOR_SALE } from '../../data/verifiedLands';
+import { getLandmarkImageForParcel, VERIFIED_LANDS_FOR_SALE } from '../../data/verifiedLands';
 import { ASSET_IMAGES } from '../../data/mockData';
 import { apiCreateInquiry } from '../../lib/api';
 
@@ -75,22 +75,22 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
       .map((p, idx) => ({
         id: p.id,
         cadastralRef: p.cadastralRef,
-        title: `${p.district} Verified Parcel`,
+        title: p.district || `${p.lga} Land Parcel`,
         district: p.district,
         state: p.state,
         lga: p.lga,
         areaSqm: p.areaSqm,
-        priceUsd: p.priceUsd || Math.round(p.areaSqm * 45),
+        priceUsd: p.priceUsd && p.priceUsd > 0 ? p.priceUsd : Math.round(p.areaSqm * 45),
         intendedUse: p.intendedUse,
         sellerName: p.applicantName,
         surveyPlanRef: p.surveyPlanRef,
         spatialHash: p.spatialHash,
         tokenId: p.tokenId || 4300 + idx,
-        verificationBadge: 'C of O Verified',
+        verificationBadge: 'Registered & Verified',
         landmark: `${p.district}, ${p.state}`,
-        imageUrl: ASSET_IMAGES.heroArchitecture
+        imageUrl: getLandmarkImageForParcel(p.state, p.intendedUse)
       }));
-    return [...VERIFIED_LANDS_FOR_SALE, ...newlyRegistered];
+    return [...newlyRegistered, ...VERIFIED_LANDS_FOR_SALE];
   }, [parcels]);
 
   const filteredListings = useMemo(() => {

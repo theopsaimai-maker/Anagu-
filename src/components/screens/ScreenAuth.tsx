@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import { AccessRoleId, AuthMode, AuthUser } from '../../types/anagu';
 import { ASSET_IMAGES } from '../../data/mockData';
-import { apiDemoLogin, apiLogin, apiSignup } from '../../lib/api';
+import { apiDemoLogin, apiLogin, apiSignup, isBackendUnavailableError } from '../../lib/api';
 
 export interface StoredAuthAccount extends AuthUser {
   password: string;
@@ -198,6 +198,12 @@ export const ScreenAuth: React.FC<Props> = ({
         const { password: _removed, ...safeUser } = found;
         void _removed;
         onAuthSuccess(safeUser);
+      } else if (isBackendUnavailableError(err)) {
+        if (found) {
+          setErrorMsg('Incorrect password. Please check your password or use a verified sample profile below.');
+        } else {
+          setErrorMsg('No Anagu account was found for that email. Switch to Sign Up to create an account.');
+        }
       } else {
         setErrorMsg(
           err instanceof Error
@@ -254,13 +260,27 @@ export const ScreenAuth: React.FC<Props> = ({
       onRegisterAccount({ ...createdUser, password: signupPassword });
       onAuthSuccess(createdUser);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unable to create account.';
-      // If email conflict returned by DB, show error cleanly instead of creating local duplicate
-      if (message.toLowerCase().includes('already exists')) {
-        setErrorMsg(message);
-      } else {
-        const alreadyExists = accounts.some((acc) => acc.email.toLowerCase() === normalizedEmail);
+      const alreadyExists = accounts.some((acc) => acc.email.toLowerCase() === normalizedEmail);
+      if (isBackendUnavailableError(err)) {
         if (alreadyExists) {
+          setErrorMsg('An account with this email already exists. Please sign in instead.');
+        } else {
+          const localUser: AuthUser = {
+            id: `usr-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+            fullName: trimmedName,
+            email: normalizedEmail,
+            phone: trimmedPhone,
+            role: selectedRole,
+            state: stateJurisdiction,
+            credentialId: trimmedCred,
+            createdAt: new Date().toISOString().slice(0, 10)
+          };
+          onRegisterAccount({ ...localUser, password: signupPassword });
+          onAuthSuccess(localUser);
+        }
+      } else {
+        const message = err instanceof Error ? err.message : 'Unable to create account.';
+        if (message.toLowerCase().includes('already exists') || alreadyExists) {
           setErrorMsg('An account with this email already exists. Please sign in instead.');
         } else {
           setErrorMsg(message);

@@ -19,6 +19,7 @@ interface Props {
   selectedParcelId?: string;
   onSelectParcelId?: (id: string) => void;
   onNextStep?: (parcelId: string) => void;
+  onOpenLands?: () => void;
 }
 
 const DOCUMENT_TYPES = [
@@ -86,7 +87,8 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
   currentUser,
   onNewParcelSubmit,
   onSelectParcelId,
-  onNextStep
+  onNextStep,
+  onOpenLands
 }) => {
   // Applicant & Jurisdiction
   const [applicantName, setApplicantName] = useState(currentUser?.fullName || '');
@@ -209,7 +211,11 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
         perimeterM,
         intendedUse,
         priceUsd,
-        status: 'draft',
+        status: 'registered',
+        tokenId: Math.floor(4250 + Math.random() * 700),
+        txHash: '0x' + Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join(''),
+        blockNumber: Math.floor(1892050 + Math.random() * 500),
+        issuanceTimestamp: new Date().toISOString(),
         spatialHash:
           '0x' + Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join(''),
         documentHash:
@@ -270,9 +276,9 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
                 <CheckCircle2 className="w-6 h-6" />
               </div>
               <div className="space-y-1">
-                <h2 className="text-lg font-bold text-white">Application Submitted Successfully</h2>
+                <h2 className="text-lg font-bold text-white">Registration Successful</h2>
                 <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-                  Your parcel registration has been recorded in the registry and queued for boundary verification.
+                  Your parcel has been officially registered in the national registry and added to the Access Lands marketplace.
                 </p>
               </div>
             </div>
@@ -294,13 +300,13 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
                 <span className="text-slate-500 block">Demarcation of Land &amp; Land price</span>
                 <span className="font-mono text-slate-200 mt-0.5 block break-all">
                   {landDemarcation} · $
-                  {(Number.isFinite(parseFloat(landPrice)) ? parseFloat(landPrice) : 85000).toLocaleString('en-US')} USD
+                  {(submittedParcel.priceUsd ?? 85000).toLocaleString('en-US')} USD
                 </span>
               </div>
               <div className="sm:col-span-2">
                 <span className="text-slate-500 block">Location of the Land</span>
                 <span className="font-medium text-slate-200 mt-0.5 block">
-                  {landLocation}, {submittedParcel.state}
+                  {submittedParcel.district}, {submittedParcel.state}
                 </span>
               </div>
               <div className="sm:col-span-2">
@@ -320,16 +326,28 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
                 Register Another Land
               </button>
 
-              {onNextStep && (
-                <button
-                  type="button"
-                  onClick={() => onNextStep(submittedParcel.id)}
-                  className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition-colors inline-flex items-center gap-2"
-                >
-                  <span>Proceed to Verification</span>
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-              )}
+              <div className="flex flex-wrap items-center gap-2.5">
+                {onNextStep && (
+                  <button
+                    type="button"
+                    onClick={() => onNextStep(submittedParcel.id)}
+                    className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-semibold rounded-xl transition-colors"
+                  >
+                    Inspect GIS Map
+                  </button>
+                )}
+
+                {onOpenLands && (
+                  <button
+                    type="button"
+                    onClick={onOpenLands}
+                    className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition-colors inline-flex items-center gap-2 shadow-lg"
+                  >
+                    <span>View in Access Lands</span>
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         ) : (

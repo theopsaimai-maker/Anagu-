@@ -174,3 +174,24 @@ export const VERIFIED_LANDS_FOR_SALE: VerifiedLandListing[] = [
     imageUrl: ibadanImg
   }
 ];
+
+export function getLandmarkImageForParcel(
+  state: string,
+  intendedUse: VerifiedLandListing['intendedUse']
+): string {
+  const s = state.toLowerCase();
+  if (s.includes('lagos')) return intendedUse === 'Commercial' ? ikejaImg : lekkiImg;
+  if (s.includes('enugu')) return enuguImg;
+  if (s.includes('ogun')) return sagamuImg;
+  if (s.includes('rivers') || s.includes('port harcourt')) return portHarcourtImg;
+  if (s.includes('kano')) return kanoImg;
+  if (s.includes('oyo') || s.includes('ibadan')) return ibadanImg;
+  if (s.includes('abuja') || s.includes('fct') || s.includes('federal capital')) {
+    return intendedUse === 'Commercial' ? guzapeImg : katampeImg;
+  }
+  if (intendedUse === 'Industrial') return sagamuImg;
+  if (intendedUse === 'Agricultural') return ibadanImg;
+  if (intendedUse === 'Commercial') return kanoImg;
+  return katampeImg;
+}
+

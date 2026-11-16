@@ -6,19 +6,98 @@ import type {
   RevocationGround
 } from '../types/anagu';
 
-async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options?.headers || {})
-    },
-    ...options
-  });
+export class ApiError extends Error {
+  status: number;
+  isBackendUnavailable: boolean;
 
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(data?.error || `Request failed (${response.status})`);
+  constructor(message: string, status: number, isBackendUnavailable = false) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.isBackendUnavailable = isBackendUnavailable;
   }
+}
+
+let backendAvailability: 'unknown' | 'available' | 'unavailable' = 'unknown';
+
+export function isBackendUnavailableError(err: unknown): boolean {
+  if (err instanceof ApiError) {
+    return err.isBackendUnavailable;
+  }
+  if (err instanceof TypeError) {
+    return true;
+  }
+  return false;
+}
+
+export async function checkBackendAvailable(): Promise<boolean> {
+  if (backendAvailability === 'available') return true;
+  if (backendAvailability === 'unavailable') return false;
+
+  try {
+    const response = await fetch('/api/health', { method: 'GET' });
+    const contentType = response.headers.get('content-type') || '';
+    if (!response.ok || !contentType.includes('application/json')) {
+      backendAvailability = 'unavailable';
+      return false;
+    }
+    const data = await response.json().catch(() => null);
+    if (data && typeof data === 'object' && 'ok' in data) {
+      backendAvailability = 'available';
+      return true;
+    }
+    backendAvailability = 'unavailable';
+    return false;
+  } catch {
+    backendAvailability = 'unavailable';
+    return false;
+  }
+}
+
+async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
+  if (backendAvailability === 'unavailable') {
+    throw new ApiError('Backend API is unavailable in static preview mode.', 404, true);
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...(options?.headers || {})
+      },
+      ...options
+    });
+  } catch {
+    throw new ApiError('Unable to reach backend service.', 0, true);
+  }
+
+  const contentType = response.headers.get('content-type') || '';
+  const isJson = contentType.includes('application/json');
+  const data = isJson ? await response.json().catch(() => ({})) : {};
+
+  if (!response.ok) {
+    const serverErrorMsg = (data as { error?: string })?.error;
+    const isParcelNotFound = response.status === 404 && serverErrorMsg === 'Parcel not found.';
+    const unavailable =
+      !isParcelNotFound &&
+      (response.status === 404 ||
+        response.status === 405 ||
+        response.status === 502 ||
+        response.status === 503 ||
+        response.status === 504 ||
+        !isJson);
+    if (unavailable) {
+      backendAvailability = 'unavailable';
+    }
+    throw new ApiError(
+      serverErrorMsg || `Request failed (${response.status})`,
+      response.status,
+      unavailable
+    );
+  }
+
+  backendAvailability = 'available';
   return data as T;
 }
 
@@ -140,8 +219,22 @@ export async function apiCreateInquiry(payload: {
   state: string;
   message?: string;
 }): Promise<void> {
-  await requestJson('/api/inquiries', {
-    method: 'POST',
-    body: JSON.stringify(payload)
-  });
+  try {
+    await requestJson('/api/inquiries', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  } catch (err) {
+    if (!isBackendUnavailableError(err)) {
+      throw err;
+    }
+    try {
+      const existing = JSON.parse(localStorage.getItem('anagu_inquiries_v1') || '[]');
+      const next = Array.isArray(existing) ? existing : [];
+      next.unshift({ ...payload, id: `inq-${Date.now()}`, createdAt: new Date().toISOString() });
+      localStorage.setItem('anagu_inquiries_v1', JSON.stringify(next));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }
 }

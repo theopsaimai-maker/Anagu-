@@ -45,7 +45,8 @@ import {
   apiListMqttMessages,
   apiListParcels,
   apiMintTitle,
-  apiRevokeTitle
+  apiRevokeTitle,
+  checkBackendAvailable
 } from './lib/api';
 
 const STORAGE_KEY = 'anagu_parcels_v1';
@@ -130,6 +131,8 @@ export default function App() {
     let active = true;
     (async () => {
       try {
+        const hasBackend = await checkBackendAvailable();
+        if (!hasBackend || !active) return;
         const [remoteParcels, remoteMqtt] = await Promise.all([
           apiListParcels(),
           apiListMqttMessages()
@@ -444,6 +447,13 @@ export default function App() {
 
           {/* Right: Portal Actions */}
           <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setViewMode('lands')}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold text-white transition-colors shrink-0 whitespace-nowrap"
+            >
+              <span>Access Lands</span>
+            </button>
             {currentUser ? (
               <button
                 type="button"
@@ -457,7 +467,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => handleOpenAuth('login', activePortalStep)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold text-white transition-colors shrink-0 whitespace-nowrap"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-xs font-semibold text-white transition-colors shrink-0 whitespace-nowrap"
               >
                 <span>Sign In</span>
               </button>
@@ -479,6 +489,7 @@ export default function App() {
               selectedParcelId={activeParcelId}
               onSelectParcelId={setActiveParcelId}
               onNextStep={(parcelId) => handleOpenPortal('surveyor', parcelId)}
+              onOpenLands={() => setViewMode('lands')}
             />
           )}
 
