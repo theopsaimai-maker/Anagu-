@@ -140,6 +140,26 @@ export interface AuthUser {
   createdAt: string;
 }
 
+export interface AdminUser {
+  id: string;
+  fullName: string;
+  email: string;
+  phone: string;
+  department: string;
+  state: string;
+  createdAt: string;
+}
+
+export interface AdminInquiryRecord {
+  id: string;
+  name: string;
+  phone: string;
+  email?: string;
+  state: string;
+  message?: string;
+  createdAt: string;
+}
+
 export type FigmaPageId = 
   | 'screens' 
   | 'landing-page'

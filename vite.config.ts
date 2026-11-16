@@ -23,5 +23,13 @@ export default defineConfig(() => {
     preview: {
       allowedHosts: true as const,
     },
+    build: {
+      rollupOptions: {
+        input: {
+          main: path.resolve(import.meta.dirname || '.', 'index.html'),
+          admin: path.resolve(import.meta.dirname || '.', 'admin.html'),
+        },
+      },
+    },
   };
 });

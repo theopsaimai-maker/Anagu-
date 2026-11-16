@@ -1,33 +1,97 @@
 import 'dotenv/config';
+import crypto from 'node:crypto';
 import dns from 'node:dns';
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 dns.setDefaultResultOrder('ipv4first');
-import type { AccessRoleId, MqttMessage, ParcelRecord, RevocationGround } from './src/types/anagu.ts';
+import type {
+  AccessRoleId,
+  AdminUser,
+  MqttMessage,
+  ParcelRecord,
+  RevocationGround
+} from './src/types/anagu.ts';
 import {
+  adminDeleteParcel,
+  adminSetParcelStatus,
   createInquiry,
   createMqttMessage,
   createParcel,
+  deleteInquiry,
+  deleteUser,
   getDatabaseHealth,
+  listAdmins,
+  listInquiries,
   listMqttMessages,
   listParcels,
+  listUsers,
+  loginAdmin,
   loginDemoRole,
   loginUser,
   mintParcelTitle,
   recordOracleAttestation,
   revokeParcelTitle,
+  signupAdmin,
   signupUser,
-  updateParcelSpatial
+  updateParcelSpatial,
+  updateUserRole
 } from './server/db.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const ADMIN_TOKEN_SECRET =
+  process.env.ADMIN_TOKEN_SECRET ||
+  process.env.SUPABASE_SECRET_KEY ||
+  process.env.DATABASE_URL ||
+  'anagu-admin-local-hmac-key-2026';
+
+function signAdminToken(admin: AdminUser): string {
+  const payload = {
+    sub: admin.id,
+    email: admin.email,
+    fullName: admin.fullName,
+    department: admin.department,
+    state: admin.state,
+    exp: Date.now() + 24 * 60 * 60 * 1000
+  };
+  const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  const sig = crypto.createHmac('sha256', ADMIN_TOKEN_SECRET).update(encoded).digest('base64url');
+  return `${encoded}.${sig}`;
+}
+
+function verifyAdminToken(token: string): { sub: string; email: string; fullName: string } | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 2) return null;
+    const [encoded, sig] = parts;
+    const expectedSig = crypto
+      .createHmac('sha256', ADMIN_TOKEN_SECRET)
+      .update(encoded)
+      .digest('base64url');
+    const a = Buffer.from(sig);
+    const b = Buffer.from(expectedSig);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as {
+      sub?: string;
+      email?: string;
+      fullName?: string;
+      exp?: number;
+    };
+    if (!payload.sub || !payload.email || !payload.exp || Date.now() > payload.exp) {
+      return null;
+    }
+    return { sub: payload.sub, email: payload.email, fullName: payload.fullName || payload.email };
+  } catch {
+    return null;
+  }
+}
+
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '2mb' }));
+  app.use(express.json({ limit: '4mb' }));
 
   // Health Check
   app.get('/api/health', async (_req, res) => {
@@ -240,6 +304,300 @@ async function startServer() {
     } catch (err) {
       console.error('[anagu/api] Create inquiry error:', err instanceof Error ? err.message : err);
       return res.status(500).json({ error: 'Failed to submit inquiry.' });
+    }
+  });
+
+  // ============================================================================
+  // SEPARATE ADMIN PORTAL ROUTES (/api/admin/*)
+  // ============================================================================
+  const requireAdminAuth: express.RequestHandler = (req, res, next) => {
+    const header = req.headers.authorization || '';
+    const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+    const decoded = token ? verifyAdminToken(token) : null;
+    if (!decoded) {
+      return res.status(401).json({ error: 'Admin authentication required. Please sign in.' });
+    }
+    (req as express.Request & { adminSession?: typeof decoded }).adminSession = decoded;
+    return next();
+  };
+
+  app.post('/api/admin/auth/signup', async (req, res) => {
+    try {
+      const { fullName, email, phone, department, state, password } = req.body ?? {};
+      if (
+        typeof fullName !== 'string' ||
+        typeof email !== 'string' ||
+        typeof phone !== 'string' ||
+        typeof password !== 'string' ||
+        !fullName.trim() ||
+        !email.trim() ||
+        !phone.trim() ||
+        password.length < 6
+      ) {
+        return res
+          .status(400)
+          .json({ error: 'Full name, email, phone, and a password (min 6 chars) are required.' });
+      }
+      const result = await signupAdmin({
+        fullName,
+        email,
+        phone,
+        department:
+          typeof department === 'string' && department.trim()
+            ? department.trim()
+            : 'Land Registry Administration',
+        state:
+          typeof state === 'string' && state.trim()
+            ? state.trim()
+            : 'Federal Capital Territory (Abuja)',
+        password
+      });
+      if (result.error || !result.admin) {
+        return res.status(409).json({ error: result.error || 'Could not create admin account.' });
+      }
+      const token = signAdminToken(result.admin);
+      return res.status(201).json({ admin: result.admin, token });
+    } catch (err) {
+      console.error('[anagu/admin] Signup error:', err instanceof Error ? err.message : err);
+      return res.status(500).json({ error: 'Unable to create admin account right now.' });
+    }
+  });
+
+  app.post('/api/admin/auth/login', async (req, res) => {
+    try {
+      const { email, password } = req.body ?? {};
+      if (typeof email !== 'string' || typeof password !== 'string' || !email.trim() || !password) {
+        return res.status(400).json({ error: 'Email and password are required.' });
+      }
+      const result = await loginAdmin(email, password);
+      if (result.error || !result.admin) {
+        return res.status(401).json({ error: result.error || 'Invalid admin credentials.' });
+      }
+      const token = signAdminToken(result.admin);
+      return res.json({ admin: result.admin, token });
+    } catch (err) {
+      console.error('[anagu/admin] Login error:', err instanceof Error ? err.message : err);
+      return res.status(500).json({ error: 'Unable to sign in right now.' });
+    }
+  });
+
+  app.get('/api/admin/auth/me', requireAdminAuth, async (req, res) => {
+    try {
+      const session = (req as express.Request & { adminSession?: { email: string } }).adminSession;
+      const admins = await listAdmins();
+      const admin = admins.find((a) => a.email.toLowerCase() === session?.email.toLowerCase());
+      if (!admin) {
+        return res.status(401).json({ error: 'Admin session expired.' });
+      }
+      return res.json({ admin });
+    } catch (err) {
+      console.error('[anagu/admin] Session check error:', err instanceof Error ? err.message : err);
+      return res.status(500).json({ error: 'Failed to verify admin session.' });
+    }
+  });
+
+  app.get('/api/admin/overview', requireAdminAuth, async (_req, res) => {
+    try {
+      const [parcels, users, inquiries, mqttMessages, admins] = await Promise.all([
+        listParcels(),
+        listUsers(),
+        listInquiries(),
+        listMqttMessages(),
+        listAdmins()
+      ]);
+      return res.json({
+        parcels,
+        users,
+        inquiries,
+        mqttMessages,
+        admins,
+        serverTime: new Date().toISOString()
+      });
+    } catch (err) {
+      console.error('[anagu/admin] Overview error:', err instanceof Error ? err.message : err);
+      return res.status(500).json({ error: 'Failed to fetch admin monitoring overview.' });
+    }
+  });
+
+  app.patch('/api/admin/parcels/:id/verify', requireAdminAuth, async (req, res) => {
+    try {
+      const parcels = await listParcels();
+      const target = parcels.find((p) => p.id === req.params.id);
+      if (!target) {
+        return res.status(404).json({ error: 'Parcel not found.' });
+      }
+      const tokenId = target.tokenId ?? Math.floor(4300 + Math.random() * 5000);
+      const txHash =
+        target.txHash ||
+        '0x' + crypto.randomBytes(32).toString('hex');
+      const blockNumber = target.blockNumber ?? Math.floor(1892100 + Math.random() * 1000);
+      const issuanceTimestamp = target.issuanceTimestamp || new Date().toISOString();
+
+      const updated = await mintParcelTitle(
+        target.id,
+        tokenId,
+        txHash,
+        blockNumber,
+        issuanceTimestamp
+      );
+      if (!updated) {
+        return res.status(404).json({ error: 'Parcel not found.' });
+      }
+
+      const session = (req as express.Request & { adminSession?: { email: string } }).adminSession;
+      await createMqttMessage({
+        id: `msg-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        topic: 'land/title/issued',
+        payload: {
+          parcelId: updated.id,
+          cadastralRef: updated.cadastralRef,
+          tokenId,
+          verifiedByAdmin: session?.email || 'admin',
+          publishedToAccessLands: true
+        },
+        qos: 1,
+        timestamp: new Date().toLocaleTimeString(),
+        deliveryLatencyMs: 38,
+        status: 'delivered'
+      });
+
+      return res.json({ parcel: updated });
+    } catch (err) {
+      console.error('[anagu/admin] Verify parcel error:', err instanceof Error ? err.message : err);
+      return res.status(500).json({ error: 'Failed to verify and publish parcel.' });
+    }
+  });
+
+  app.patch('/api/admin/parcels/:id/reject', requireAdminAuth, async (req, res) => {
+    try {
+      const updated = await adminSetParcelStatus(req.params.id, 'rejected');
+      if (!updated) {
+        return res.status(404).json({ error: 'Parcel not found.' });
+      }
+      const session = (req as express.Request & { adminSession?: { email: string } }).adminSession;
+      const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+      await createMqttMessage({
+        id: `msg-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        topic: 'land/registration/status',
+        payload: {
+          parcelId: updated.id,
+          cadastralRef: updated.cadastralRef,
+          status: 'rejected',
+          rejectedByAdmin: session?.email || 'admin',
+          reason: reason || 'Rejected during admin registry review'
+        },
+        qos: 1,
+        timestamp: new Date().toLocaleTimeString(),
+        deliveryLatencyMs: 41,
+        status: 'delivered'
+      });
+      return res.json({ parcel: updated });
+    } catch (err) {
+      console.error('[anagu/admin] Reject parcel error:', err instanceof Error ? err.message : err);
+      return res.status(500).json({ error: 'Failed to reject parcel.' });
+    }
+  });
+
+  app.patch('/api/admin/parcels/:id/pending', requireAdminAuth, async (req, res) => {
+    try {
+      const updated = await adminSetParcelStatus(req.params.id, 'draft');
+      if (!updated) {
+        return res.status(404).json({ error: 'Parcel not found.' });
+      }
+      return res.json({ parcel: updated });
+    } catch (err) {
+      console.error('[anagu/admin] Set pending error:', err instanceof Error ? err.message : err);
+      return res.status(500).json({ error: 'Failed to move parcel to pending verification.' });
+    }
+  });
+
+  app.patch('/api/admin/parcels/:id/revoke', requireAdminAuth, async (req, res) => {
+    try {
+      const { ground, gazetteNumber, reason } = req.body ?? {};
+      const validGround: RevocationGround =
+        ground === 'BreachOfStatutoryCondition' ? 'BreachOfStatutoryCondition' : 'OverridingPublicInterest';
+      const updated = await revokeParcelTitle(
+        req.params.id,
+        validGround,
+        String(gazetteNumber || 'Federal Gazette Admin Notice'),
+        String(reason || 'Statutory administrative revocation order')
+      );
+      if (!updated) {
+        return res.status(404).json({ error: 'Parcel not found.' });
+      }
+      await createMqttMessage({
+        id: `msg-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        topic: 'land/title/revoked',
+        payload: {
+          parcelId: updated.id,
+          cadastralRef: updated.cadastralRef,
+          ground: validGround
+        },
+        qos: 2,
+        timestamp: new Date().toLocaleTimeString(),
+        deliveryLatencyMs: 45,
+        status: 'delivered'
+      });
+      return res.json({ parcel: updated });
+    } catch (err) {
+      console.error('[anagu/admin] Revoke parcel error:', err instanceof Error ? err.message : err);
+      return res.status(500).json({ error: 'Failed to revoke parcel title.' });
+    }
+  });
+
+  app.delete('/api/admin/parcels/:id', requireAdminAuth, async (req, res) => {
+    try {
+      const deleted = await adminDeleteParcel(req.params.id);
+      if (!deleted) {
+        return res.status(404).json({ error: 'Parcel not found.' });
+      }
+      return res.json({ ok: true });
+    } catch (err) {
+      console.error('[anagu/admin] Delete parcel error:', err instanceof Error ? err.message : err);
+      return res.status(500).json({ error: 'Failed to delete parcel.' });
+    }
+  });
+
+  app.patch('/api/admin/users/:id/role', requireAdminAuth, async (req, res) => {
+    try {
+      const role = req.body?.role;
+      if (role !== 'citizen' && role !== 'surveyor' && role !== 'oracle') {
+        return res.status(400).json({ error: 'Invalid role value.' });
+      }
+      const updated = await updateUserRole(req.params.id, role);
+      if (!updated) {
+        return res.status(404).json({ error: 'User not found.' });
+      }
+      return res.json({ user: updated });
+    } catch (err) {
+      console.error('[anagu/admin] Update user role error:', err instanceof Error ? err.message : err);
+      return res.status(500).json({ error: 'Failed to update user role.' });
+    }
+  });
+
+  app.delete('/api/admin/users/:id', requireAdminAuth, async (req, res) => {
+    try {
+      const deleted = await deleteUser(req.params.id);
+      if (!deleted) {
+        return res.status(404).json({ error: 'User not found.' });
+      }
+      return res.json({ ok: true });
+    } catch (err) {
+      console.error('[anagu/admin] Delete user error:', err instanceof Error ? err.message : err);
+      return res.status(500).json({ error: 'Failed to remove user.' });
+    }
+  });
+
+  app.delete('/api/admin/inquiries/:id', requireAdminAuth, async (req, res) => {
+    try {
+      const deleted = await deleteInquiry(req.params.id);
+      if (!deleted) {
+        return res.status(404).json({ error: 'Inquiry record not found.' });
+      }
+      return res.json({ ok: true });
+    } catch (err) {
+      console.error('[anagu/admin] Delete inquiry error:', err instanceof Error ? err.message : err);
+      return res.status(500).json({ error: 'Failed to remove inquiry.' });
     }
   });
 
@@ -472,6 +830,17 @@ async function startServer() {
   // Frontend Serving (Vite dev middlewares in development, dist/ static files in production)
   const isProduction = process.env.NODE_ENV === 'production';
   if (!isProduction) {
+    // Route /admin and /admin/* to the separate standalone admin.html entry point
+    app.use((req, _res, next) => {
+      if (
+        req.method === 'GET' &&
+        (req.path === '/admin' || req.path === '/admin/' || req.path.startsWith('/admin/'))
+      ) {
+        req.url = '/admin.html';
+      }
+      next();
+    });
+
     app.get('/@vite/client', (_req, res) => {
       res.type('application/javascript').send(`
 const sheetsMap = new Map();
@@ -532,6 +901,9 @@ export class ErrorOverlay extends HTMLElement {}
   } else {
     const distDir = path.join(__dirname, 'dist');
     app.use(express.static(distDir));
+    app.get(['/admin', '/admin/', '/admin/*'], (_req, res) => {
+      return res.sendFile(path.join(distDir, 'admin.html'));
+    });
     app.get('*', (req, res) => {
       if (req.path.startsWith('/api/')) {
         return res.status(404).json({ error: 'API route not found.' });

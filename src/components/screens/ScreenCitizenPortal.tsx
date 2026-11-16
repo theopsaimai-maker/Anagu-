@@ -422,11 +422,7 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
       priceUsd,
       sellerWallet: sellerWallet.trim(),
       mapSnapshotUrl: mapSnapshotUrl || undefined,
-      status: 'registered',
-      tokenId: Math.floor(4250 + Math.random() * 700),
-      txHash: '0x' + Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join(''),
-      blockNumber: Math.floor(1892050 + Math.random() * 500),
-      issuanceTimestamp: new Date().toISOString(),
+      status: 'draft',
       spatialHash:
         '0x' + Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join(''),
       documentHash:
@@ -483,21 +479,26 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
 
         {/* Success Receipt Card OR Centered Registration Form */}
         {submittedParcel ? (
-          <div className="bg-slate-900 border border-emerald-500/40 rounded-2xl p-6 sm:p-8 shadow-2xl space-y-6">
+          <div className="bg-slate-900 border border-amber-500/40 rounded-2xl p-6 sm:p-8 shadow-2xl space-y-6">
             <div className="flex items-start gap-4">
-              <div className="w-11 h-11 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 flex items-center justify-center shrink-0">
-                <CheckCircle2 className="w-6 h-6" />
+              <div className="w-11 h-11 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 flex items-center justify-center shrink-0">
+                <ShieldCheck className="w-6 h-6" />
               </div>
               <div className="space-y-1">
-                <h2 className="text-lg font-bold text-white">Registration Successful</h2>
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-lg font-bold text-white">Submitted — Pending Admin Verification</h2>
+                  <span className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-500/15 border border-amber-500/30 text-amber-300">
+                    Pending Review
+                  </span>
+                </div>
                 <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-                  Your parcel has been officially registered in the national registry and added to the Access Lands marketplace.
+                  Your parcel application has been recorded and placed in the Admin verification queue. It will not appear on the Access Lands marketplace until an administrator verifies and publishes it.
                 </p>
               </div>
             </div>
 
             {submittedParcel.mapSnapshotUrl && (
-              <div className="rounded-xl overflow-hidden border border-emerald-500/30 bg-slate-950">
+              <div className="rounded-xl overflow-hidden border border-amber-500/30 bg-slate-950">
                 <img
                   src={submittedParcel.mapSnapshotUrl}
                   alt={`OpenStreetMap snapshot of ${submittedParcel.district}, ${submittedParcel.state}`}
@@ -523,6 +524,12 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
                 </span>
               </div>
               <div>
+                <span className="text-slate-500 block">Verification Status</span>
+                <span className="inline-flex items-center gap-1.5 font-semibold text-amber-300 mt-0.5">
+                  Pending Admin Verification
+                </span>
+              </div>
+              <div className="sm:col-span-2">
                 <span className="text-slate-500 block">Applicant</span>
                 <span className="font-semibold text-white mt-0.5 block">
                   {submittedParcel.applicantName} ({submittedParcel.applicantNin})
@@ -584,7 +591,7 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
                     onClick={onOpenLands}
                     className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition-colors inline-flex items-center gap-2 shadow-lg"
                   >
-                    <span>View in Access Lands</span>
+                    <span>Browse Access Lands</span>
                     <ChevronRight className="w-4 h-4" />
                   </button>
                 )}

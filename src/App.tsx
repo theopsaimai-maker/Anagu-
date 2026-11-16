@@ -126,10 +126,11 @@ export default function App() {
   const [activePortalStep, setActivePortalStep] = useState<PortalStepId>('citizen');
   const [activeParcelId, setActiveParcelId] = useState<string>(parcels[1]?.id || parcels[0]?.id || '');
 
-  // Hydrate registry parcels & MQTT log from database on mount
+  // Hydrate registry parcels & MQTT log from database on mount, focus, and interval
+  // so Admin verification/rejection/revocation updates reflect on Access Lands live
   useEffect(() => {
     let active = true;
-    (async () => {
+    const syncFromBackend = async () => {
       try {
         const hasBackend = await checkBackendAvailable();
         if (!hasBackend || !active) return;
@@ -138,7 +139,7 @@ export default function App() {
           apiListMqttMessages()
         ]);
         if (!active) return;
-        if (Array.isArray(remoteParcels) && remoteParcels.length > 0) {
+        if (Array.isArray(remoteParcels)) {
           setParcels(remoteParcels);
           setActiveParcelId((prev) =>
             prev && remoteParcels.some((p) => p.id === prev)
@@ -152,9 +153,15 @@ export default function App() {
       } catch {
         // Keep local cache if backend API is temporarily unavailable
       }
-    })();
+    };
+
+    syncFromBackend();
+    const intervalId = window.setInterval(syncFromBackend, 10000);
+    window.addEventListener('focus', syncFromBackend);
     return () => {
       active = false;
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', syncFromBackend);
     };
   }, []);
   const [activePage, setActivePage] = useState<FigmaPageId>('screens');

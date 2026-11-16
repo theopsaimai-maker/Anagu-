@@ -255,3 +255,19 @@ VALUES
   ('msg-903', 'land/verification/oracle', '{"applicationId":"PAR-2026-0902","outcome":"Verified","attestationScore":98,"reviewerId":"ORACLE_OROD_ETIOSA"}'::jsonb, 1, '16:04:19', 38, 'delivered', '2026-09-02T16:04:19Z'),
   ('msg-904', 'land/registration/status', '{"applicationId":"PAR-2026-0902","status":"spatial_verified","bufferToleranceM":0.5,"intersectsCollision":false}'::jsonb, 1, '16:04:22', 44, 'delivered', '2026-09-02T16:04:22Z')
 ON CONFLICT (id) DO NOTHING;
+
+-- 7. Dedicated Registry Admin Operators
+CREATE TABLE IF NOT EXISTS public.anagu_admins (
+  id TEXT PRIMARY KEY,
+  full_name TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE,
+  phone TEXT NOT NULL,
+  department TEXT NOT NULL,
+  state_jurisdiction TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_anagu_admins_email ON public.anagu_admins (LOWER(email));
+

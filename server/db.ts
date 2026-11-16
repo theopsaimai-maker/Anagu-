@@ -2,6 +2,8 @@ import crypto from 'node:crypto';
 import { Pool } from 'pg';
 import type {
   AccessRoleId,
+  AdminInquiryRecord,
+  AdminUser,
   AuthUser,
   MqttMessage,
   ParcelRecord,
@@ -79,6 +81,36 @@ export interface OracleAttestationInput {
   reviewerId?: string;
   quorumPercent?: number;
   attestationScore?: number;
+}
+
+export interface AdminSignupInput {
+  fullName: string;
+  email: string;
+  phone: string;
+  department: string;
+  state: string;
+  password: string;
+}
+
+interface StoredAdminRow {
+  id: string;
+  full_name: string;
+  email: string;
+  phone: string;
+  department: string;
+  state_jurisdiction: string;
+  password_hash: string;
+  created_at: string;
+}
+
+interface StoredInquiryRow {
+  id: string;
+  full_name: string;
+  phone: string;
+  email: string | null;
+  state_jurisdiction: string;
+  message: string | null;
+  created_at: string;
 }
 
 const SEED_USERS: StoredUserRow[] = [
@@ -270,10 +302,34 @@ const globalStore = globalThis as unknown as {
   _anaguSupabaseWarned?: boolean;
   _anaguSchemaPromise?: Promise<void> | null;
   _anaguMemoryUsers?: StoredUserRow[];
+  _anaguMemoryAdmins?: StoredAdminRow[];
   _anaguMemoryParcels?: ParcelRecord[];
   _anaguMemoryMqtt?: MqttMessage[];
   _anaguMemoryInquiries?: Array<InquiryInput & { id: string; createdAt: string }>;
 };
+
+const SEED_ADMINS: StoredAdminRow[] = [
+  {
+    id: 'adm-chief-01',
+    full_name: 'Registrar-General Chief Admin',
+    email: 'admin@anagu.ng',
+    phone: '+234 800 262 4800',
+    department: 'Federal Land Registry Inspectorate',
+    state_jurisdiction: 'Federal Capital Territory (Abuja)',
+    password_hash: '',
+    created_at: '2026-04-01'
+  }
+];
+
+function getMemoryAdmins(): StoredAdminRow[] {
+  if (!globalStore._anaguMemoryAdmins) {
+    globalStore._anaguMemoryAdmins = SEED_ADMINS.map((a) => ({
+      ...a,
+      password_hash: a.password_hash || hashPassword('anagu-admin', 'anagu_salt_admin_01')
+    }));
+  }
+  return globalStore._anaguMemoryAdmins;
+}
 
 function getMemoryUsers(): StoredUserRow[] {
   if (!globalStore._anaguMemoryUsers) {
@@ -723,6 +779,44 @@ async function ensureSchema(pool: Pool): Promise<void> {
           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
       `);
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS public.anagu_admins (
+          id TEXT PRIMARY KEY,
+          full_name TEXT NOT NULL,
+          email TEXT NOT NULL UNIQUE,
+          phone TEXT NOT NULL,
+          department TEXT NOT NULL,
+          state_jurisdiction TEXT NOT NULL,
+          password_hash TEXT NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+      `);
+      await pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_anagu_admins_email ON public.anagu_admins (LOWER(email));
+      `);
+
+      const defaultAdminHash = hashPassword('anagu-admin', 'anagu_salt_admin_01');
+      for (const admin of SEED_ADMINS) {
+        await pool.query(
+          `
+          INSERT INTO public.anagu_admins (
+            id, full_name, email, phone, department, state_jurisdiction, password_hash, created_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          ON CONFLICT (id) DO NOTHING
+          `,
+          [
+            admin.id,
+            admin.full_name,
+            admin.email,
+            admin.phone,
+            admin.department,
+            admin.state_jurisdiction,
+            defaultAdminHash,
+            admin.created_at
+          ]
+        );
+      }
 
       for (const user of SEED_USERS) {
         await pool.query(
@@ -1533,3 +1627,452 @@ export async function loginDemoRole(role: AccessRoleId): Promise<AuthUser> {
   const found = getMemoryUsers().find((u) => u.role === role) || SEED_USERS[0];
   return mapUserRow(found);
 }
+
+function mapAdminRow(row: StoredAdminRow): AdminUser {
+  return {
+    id: row.id,
+    fullName: row.full_name,
+    email: row.email,
+    phone: row.phone,
+    department: row.department,
+    state: row.state_jurisdiction,
+    createdAt:
+      typeof row.created_at === 'string'
+        ? row.created_at.slice(0, 10)
+        : new Date(row.created_at).toISOString().slice(0, 10)
+  };
+}
+
+export async function signupAdmin(
+  input: AdminSignupInput
+): Promise<{ admin?: AdminUser; error?: string }> {
+  const normalizedEmail = input.email.trim().toLowerCase();
+  const id = `adm-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+  const createdAt = new Date().toISOString().slice(0, 10);
+  const passwordHash = hashPassword(input.password);
+
+  const pool = getPool();
+  if (pool) {
+    try {
+      await ensureSchema(pool);
+      const existing = await pool.query<{ id: string }>(
+        `SELECT id FROM public.anagu_admins WHERE LOWER(email) = LOWER($1) LIMIT 1`,
+        [normalizedEmail]
+      );
+      if (existing.rows.length > 0) {
+        return { error: 'An admin account with this email already exists. Please sign in.' };
+      }
+      const res = await pool.query<StoredAdminRow>(
+        `
+        INSERT INTO public.anagu_admins (
+          id, full_name, email, phone, department, state_jurisdiction, password_hash
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING *
+        `,
+        [
+          id,
+          input.fullName.trim(),
+          normalizedEmail,
+          input.phone.trim(),
+          input.department.trim(),
+          input.state,
+          passwordHash
+        ]
+      );
+      return { admin: mapAdminRow(res.rows[0]) };
+    } catch (err) {
+      const code = (err as { code?: string })?.code;
+      if (code === '23505') {
+        return { error: 'An admin account with this email already exists. Please sign in.' };
+      }
+      if (!isTransientConnectionError(err)) throw err;
+      tripPgCircuit(err, 'signupAdmin');
+    }
+  }
+
+  if (isSupabaseRestConfigured()) {
+    try {
+      const existing = await supabaseRest<Array<{ id: string }>>(
+        `anagu_admins?select=id&email=ilike.${encodeURIComponent(normalizedEmail)}&limit=1`
+      );
+      if (existing.length > 0) {
+        return { error: 'An admin account with this email already exists. Please sign in.' };
+      }
+      const rows = await supabaseRest<StoredAdminRow[]>('anagu_admins', {
+        method: 'POST',
+        prefer: 'return=representation',
+        body: {
+          id,
+          full_name: input.fullName.trim(),
+          email: normalizedEmail,
+          phone: input.phone.trim(),
+          department: input.department.trim(),
+          state_jurisdiction: input.state,
+          password_hash: passwordHash
+        }
+      });
+      return { admin: mapAdminRow(rows[0]) };
+    } catch (err) {
+      if (!shouldFallbackFromSupabase(err, 'signupAdmin')) throw err;
+    }
+  }
+
+  const admins = getMemoryAdmins();
+  if (admins.some((a) => a.email.toLowerCase() === normalizedEmail)) {
+    return { error: 'An admin account with this email already exists. Please sign in.' };
+  }
+  const row: StoredAdminRow = {
+    id,
+    full_name: input.fullName.trim(),
+    email: normalizedEmail,
+    phone: input.phone.trim(),
+    department: input.department.trim(),
+    state_jurisdiction: input.state,
+    password_hash: passwordHash,
+    created_at: createdAt
+  };
+  admins.unshift(row);
+  return { admin: mapAdminRow(row) };
+}
+
+export async function loginAdmin(
+  email: string,
+  password: string
+): Promise<{ admin?: AdminUser; error?: string }> {
+  const normalizedEmail = email.trim().toLowerCase();
+  const pool = getPool();
+
+  if (pool) {
+    try {
+      await ensureSchema(pool);
+      const res = await pool.query<StoredAdminRow>(
+        `SELECT * FROM public.anagu_admins WHERE LOWER(email) = LOWER($1) LIMIT 1`,
+        [normalizedEmail]
+      );
+      const found = res.rows[0];
+      if (!found) {
+        return { error: 'No admin account was found for that email. Switch to Sign Up to register an admin.' };
+      }
+      if (!verifyPassword(password, found.password_hash)) {
+        return { error: 'Incorrect admin password.' };
+      }
+      return { admin: mapAdminRow(found) };
+    } catch (err) {
+      if (!isTransientConnectionError(err)) throw err;
+      tripPgCircuit(err, 'loginAdmin');
+    }
+  }
+
+  if (isSupabaseRestConfigured()) {
+    try {
+      const rows = await supabaseRest<StoredAdminRow[]>(
+        `anagu_admins?select=*&email=ilike.${encodeURIComponent(normalizedEmail)}&limit=1`
+      );
+      const found = rows[0];
+      if (!found) {
+        return { error: 'No admin account was found for that email. Switch to Sign Up to register an admin.' };
+      }
+      if (!verifyPassword(password, found.password_hash)) {
+        return { error: 'Incorrect admin password.' };
+      }
+      return { admin: mapAdminRow(found) };
+    } catch (err) {
+      if (!shouldFallbackFromSupabase(err, 'loginAdmin')) throw err;
+    }
+  }
+
+  const found = getMemoryAdmins().find((a) => a.email.toLowerCase() === normalizedEmail);
+  if (!found) {
+    return { error: 'No admin account was found for that email. Switch to Sign Up to register an admin.' };
+  }
+  if (!verifyPassword(password, found.password_hash)) {
+    return { error: 'Incorrect admin password.' };
+  }
+  return { admin: mapAdminRow(found) };
+}
+
+export async function listAdmins(): Promise<AdminUser[]> {
+  const pool = getPool();
+  if (pool) {
+    try {
+      await ensureSchema(pool);
+      const res = await pool.query<StoredAdminRow>(
+        `SELECT * FROM public.anagu_admins ORDER BY created_at DESC`
+      );
+      return res.rows.map(mapAdminRow);
+    } catch (err) {
+      if (!isTransientConnectionError(err)) throw err;
+      tripPgCircuit(err, 'listAdmins');
+    }
+  }
+
+  if (isSupabaseRestConfigured()) {
+    try {
+      const rows = await supabaseRest<StoredAdminRow[]>(
+        'anagu_admins?select=*&order=created_at.desc'
+      );
+      return rows.map(mapAdminRow);
+    } catch (err) {
+      if (!shouldFallbackFromSupabase(err, 'listAdmins')) throw err;
+    }
+  }
+
+  return getMemoryAdmins().map(mapAdminRow);
+}
+
+export async function listUsers(): Promise<AuthUser[]> {
+  const pool = getPool();
+  if (pool) {
+    try {
+      await ensureSchema(pool);
+      const res = await pool.query<StoredUserRow>(
+        `SELECT * FROM public.anagu_users ORDER BY created_at DESC`
+      );
+      return res.rows.map(mapUserRow);
+    } catch (err) {
+      if (!isTransientConnectionError(err)) throw err;
+      tripPgCircuit(err, 'listUsers');
+    }
+  }
+
+  if (isSupabaseRestConfigured()) {
+    try {
+      const rows = await supabaseRest<StoredUserRow[]>(
+        'anagu_users?select=*&order=created_at.desc'
+      );
+      return rows.map(mapUserRow);
+    } catch (err) {
+      if (!shouldFallbackFromSupabase(err, 'listUsers')) throw err;
+    }
+  }
+
+  return getMemoryUsers().map(mapUserRow);
+}
+
+export async function updateUserRole(userId: string, role: AccessRoleId): Promise<AuthUser | null> {
+  const pool = getPool();
+  if (pool) {
+    try {
+      await ensureSchema(pool);
+      const res = await pool.query<StoredUserRow>(
+        `UPDATE public.anagu_users SET role = $2, updated_at = NOW() WHERE id = $1 RETURNING *`,
+        [userId, role]
+      );
+      return res.rows[0] ? mapUserRow(res.rows[0]) : null;
+    } catch (err) {
+      if (!isTransientConnectionError(err)) throw err;
+      tripPgCircuit(err, 'updateUserRole');
+    }
+  }
+
+  if (isSupabaseRestConfigured()) {
+    try {
+      const rows = await supabaseRest<StoredUserRow[]>(
+        `anagu_users?id=eq.${encodeURIComponent(userId)}`,
+        {
+          method: 'PATCH',
+          prefer: 'return=representation',
+          body: { role }
+        }
+      );
+      return rows[0] ? mapUserRow(rows[0]) : null;
+    } catch (err) {
+      if (!shouldFallbackFromSupabase(err, 'updateUserRole')) throw err;
+    }
+  }
+
+  const found = getMemoryUsers().find((u) => u.id === userId);
+  if (!found) return null;
+  found.role = role;
+  return mapUserRow(found);
+}
+
+export async function deleteUser(userId: string): Promise<boolean> {
+  const pool = getPool();
+  if (pool) {
+    try {
+      await ensureSchema(pool);
+      const res = await pool.query(`DELETE FROM public.anagu_users WHERE id = $1`, [userId]);
+      return (res.rowCount ?? 0) > 0;
+    } catch (err) {
+      if (!isTransientConnectionError(err)) throw err;
+      tripPgCircuit(err, 'deleteUser');
+    }
+  }
+
+  if (isSupabaseRestConfigured()) {
+    try {
+      await supabaseRest(`anagu_users?id=eq.${encodeURIComponent(userId)}`, {
+        method: 'DELETE'
+      });
+      return true;
+    } catch (err) {
+      if (!shouldFallbackFromSupabase(err, 'deleteUser')) throw err;
+    }
+  }
+
+  const users = getMemoryUsers();
+  const idx = users.findIndex((u) => u.id === userId);
+  if (idx === -1) return false;
+  users.splice(idx, 1);
+  return true;
+}
+
+export async function listInquiries(): Promise<AdminInquiryRecord[]> {
+  const pool = getPool();
+  if (pool) {
+    try {
+      await ensureSchema(pool);
+      const res = await pool.query<StoredInquiryRow>(
+        `SELECT * FROM public.anagu_inquiries ORDER BY created_at DESC LIMIT 200`
+      );
+      return res.rows.map((r) => ({
+        id: r.id,
+        name: r.full_name,
+        phone: r.phone,
+        email: r.email ?? undefined,
+        state: r.state_jurisdiction,
+        message: r.message ?? undefined,
+        createdAt:
+          typeof r.created_at === 'string' ? r.created_at : new Date(r.created_at).toISOString()
+      }));
+    } catch (err) {
+      if (!isTransientConnectionError(err)) throw err;
+      tripPgCircuit(err, 'listInquiries');
+    }
+  }
+
+  if (isSupabaseRestConfigured()) {
+    try {
+      const rows = await supabaseRest<StoredInquiryRow[]>(
+        'anagu_inquiries?select=*&order=created_at.desc&limit=200'
+      );
+      return rows.map((r) => ({
+        id: r.id,
+        name: r.full_name,
+        phone: r.phone,
+        email: r.email ?? undefined,
+        state: r.state_jurisdiction,
+        message: r.message ?? undefined,
+        createdAt:
+          typeof r.created_at === 'string' ? r.created_at : new Date(r.created_at).toISOString()
+      }));
+    } catch (err) {
+      if (!shouldFallbackFromSupabase(err, 'listInquiries')) throw err;
+    }
+  }
+
+  return getMemoryInquiries().map((inq) => ({
+    id: inq.id,
+    name: inq.name,
+    phone: inq.phone,
+    email: inq.email,
+    state: inq.state,
+    message: inq.message,
+    createdAt: inq.createdAt
+  }));
+}
+
+export async function deleteInquiry(inquiryId: string): Promise<boolean> {
+  const pool = getPool();
+  if (pool) {
+    try {
+      await ensureSchema(pool);
+      const res = await pool.query(`DELETE FROM public.anagu_inquiries WHERE id = $1`, [inquiryId]);
+      return (res.rowCount ?? 0) > 0;
+    } catch (err) {
+      if (!isTransientConnectionError(err)) throw err;
+      tripPgCircuit(err, 'deleteInquiry');
+    }
+  }
+
+  if (isSupabaseRestConfigured()) {
+    try {
+      await supabaseRest(`anagu_inquiries?id=eq.${encodeURIComponent(inquiryId)}`, {
+        method: 'DELETE'
+      });
+      return true;
+    } catch (err) {
+      if (!shouldFallbackFromSupabase(err, 'deleteInquiry')) throw err;
+    }
+  }
+
+  const list = getMemoryInquiries();
+  const idx = list.findIndex((i) => i.id === inquiryId);
+  if (idx === -1) return false;
+  list.splice(idx, 1);
+  return true;
+}
+
+export async function adminSetParcelStatus(
+  parcelId: string,
+  status: ParcelRecord['status']
+): Promise<ParcelRecord | null> {
+  const pool = getPool();
+  if (pool) {
+    try {
+      await ensureSchema(pool);
+      const res = await pool.query<StoredParcelRow>(
+        `UPDATE public.anagu_parcels SET status = $2, updated_at = NOW() WHERE id = $1 RETURNING *`,
+        [parcelId, status]
+      );
+      return res.rows[0] ? mapParcelRow(res.rows[0]) : null;
+    } catch (err) {
+      if (!isTransientConnectionError(err)) throw err;
+      tripPgCircuit(err, 'adminSetParcelStatus');
+    }
+  }
+
+  if (isSupabaseRestConfigured()) {
+    try {
+      const rows = await supabaseRest<StoredParcelRow[]>(
+        `anagu_parcels?id=eq.${encodeURIComponent(parcelId)}`,
+        {
+          method: 'PATCH',
+          prefer: 'return=representation',
+          body: { status }
+        }
+      );
+      return rows[0] ? mapParcelRow(rows[0]) : null;
+    } catch (err) {
+      if (!shouldFallbackFromSupabase(err, 'adminSetParcelStatus')) throw err;
+    }
+  }
+
+  const found = getMemoryParcels().find((p) => p.id === parcelId);
+  if (!found) return null;
+  found.status = status;
+  return found;
+}
+
+export async function adminDeleteParcel(parcelId: string): Promise<boolean> {
+  const pool = getPool();
+  if (pool) {
+    try {
+      await ensureSchema(pool);
+      const res = await pool.query(`DELETE FROM public.anagu_parcels WHERE id = $1`, [parcelId]);
+      return (res.rowCount ?? 0) > 0;
+    } catch (err) {
+      if (!isTransientConnectionError(err)) throw err;
+      tripPgCircuit(err, 'adminDeleteParcel');
+    }
+  }
+
+  if (isSupabaseRestConfigured()) {
+    try {
+      await supabaseRest(`anagu_parcels?id=eq.${encodeURIComponent(parcelId)}`, {
+        method: 'DELETE'
+      });
+      return true;
+    } catch (err) {
+      if (!shouldFallbackFromSupabase(err, 'adminDeleteParcel')) throw err;
+    }
+  }
+
+  const list = getMemoryParcels();
+  const idx = list.findIndex((p) => p.id === parcelId);
+  if (idx === -1) return false;
+  list.splice(idx, 1);
+  return true;
+}
+
