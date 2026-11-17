@@ -20,7 +20,8 @@ import {
   RefreshCw,
   ShieldCheck,
   Loader2,
-  Maximize2
+  Maximize2,
+  Clock
 } from 'lucide-react';
 import { AuthUser, ParcelRecord, VerifiedLandListing } from '../../types/anagu';
 import { VERIFIED_LANDS_FOR_SALE, getDefaultPolygonForState } from '../../data/verifiedLands';
@@ -165,33 +166,49 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
 
   const allListings = useMemo<VerifiedLandListing[]>(() => {
     const existingRefs = new Set(VERIFIED_LANDS_FOR_SALE.map((item) => item.cadastralRef));
-    const newlyRegistered: VerifiedLandListing[] = parcels
-      .filter((p) => p.status === 'registered' && !existingRefs.has(p.cadastralRef))
-      .map((p, idx) => ({
-        id: p.id,
-        cadastralRef: p.cadastralRef,
-        title: p.district || `${p.lga} Land Parcel`,
-        district: p.district,
-        state: p.state,
-        lga: p.lga,
-        areaSqm: p.areaSqm,
-        priceUsd: p.priceUsd && p.priceUsd > 0 ? p.priceUsd : Math.round(p.areaSqm * 45),
-        intendedUse: p.intendedUse,
-        sellerName: p.applicantName,
-        sellerWallet: p.sellerWallet,
-        surveyPlanRef: p.surveyPlanRef,
-        spatialHash: p.spatialHash,
-        tokenId: p.tokenId || 4300 + idx,
-        verificationBadge: 'Registered & Verified',
-        landmark: `${p.lga}, ${p.state}`,
-        imageUrl: p.mapSnapshotUrl || '',
-        coordinates:
-          p.coordinates && p.coordinates.length >= 3
-            ? p.coordinates
-            : getDefaultPolygonForState(p.state),
-        isOsmSnapshot: true
-      }));
-    return [...newlyRegistered, ...VERIFIED_LANDS_FOR_SALE];
+    const userSubmittedListings: VerifiedLandListing[] = parcels
+      .filter(
+        (p) =>
+          p.status !== 'revoked' &&
+          p.status !== 'rejected' &&
+          !existingRefs.has(p.cadastralRef)
+      )
+      .map((p, idx) => {
+        const isApproved = p.status === 'registered';
+        return {
+          id: p.id,
+          cadastralRef: p.cadastralRef,
+          title: p.district || `${p.lga} Land Parcel`,
+          district: p.district,
+          state: p.state,
+          lga: p.lga,
+          areaSqm: p.areaSqm,
+          priceUsd: p.priceUsd && p.priceUsd > 0 ? p.priceUsd : Math.round(p.areaSqm * 45),
+          intendedUse: p.intendedUse,
+          sellerName: p.applicantName,
+          sellerWallet: p.sellerWallet,
+          surveyPlanRef: p.surveyPlanRef,
+          spatialHash: p.spatialHash,
+          tokenId: p.tokenId || 4300 + idx,
+          verificationBadge: isApproved ? 'Approved' : 'Waiting for admin approval',
+          approvalStatus: isApproved ? 'approved' : 'waiting_admin_approval',
+          landmark: `${p.lga}, ${p.state}`,
+          imageUrl: p.mapSnapshotUrl || '',
+          coordinates:
+            p.coordinates && p.coordinates.length >= 3
+              ? p.coordinates
+              : getDefaultPolygonForState(p.state),
+          isOsmSnapshot: true
+        };
+      });
+
+    const catalogListings: VerifiedLandListing[] = VERIFIED_LANDS_FOR_SALE.map((item) => ({
+      ...item,
+      verificationBadge: 'Approved',
+      approvalStatus: 'approved'
+    }));
+
+    return [...userSubmittedListings, ...catalogListings];
   }, [parcels]);
 
   const filteredListings = useMemo(() => {
@@ -243,6 +260,9 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
   };
 
   const openBuyModal = (listing: VerifiedLandListing) => {
+    if (listing.approvalStatus === 'waiting_admin_approval') {
+      return;
+    }
     setBuyListing(listing);
     setBuyerName(currentUser?.fullName || '');
     setBuyerPhone(currentUser?.phone || '');
@@ -542,6 +562,7 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-7">
             {filteredListings.map((listing) => {
+              const isWaitingApproval = listing.approvalStatus === 'waiting_admin_approval';
               const mapCoords =
                 listing.coordinates && listing.coordinates.length >= 3
                   ? listing.coordinates
@@ -550,7 +571,11 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
               return (
                 <article
                   key={listing.id}
-                  className="bg-slate-900 border border-slate-800 hover:border-emerald-500/60 rounded-2xl overflow-hidden flex flex-col justify-between transition-all duration-200 hover:-translate-y-0.5 shadow-xl shadow-black/30 group"
+                  className={`bg-slate-900 border rounded-2xl overflow-hidden flex flex-col justify-between transition-all duration-200 hover:-translate-y-0.5 shadow-xl shadow-black/30 group ${
+                    isWaitingApproval
+                      ? 'border-amber-500/40 hover:border-amber-400/70'
+                      : 'border-slate-800 hover:border-emerald-500/60'
+                  }`}
                 >
                   <div>
                     {/* Primary Visual Stage: Official Land Registry Snapshot */}
@@ -576,12 +601,19 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
 
                     {/* Card Body */}
                     <div className="p-5 space-y-4">
-                      {/* Clean Unboxed Verification & Specs Metadata */}
+                      {/* Clean Unboxed Approval Status & Specs Metadata */}
                       <div className="flex items-center flex-wrap gap-1.5 text-[11px] font-medium text-slate-400">
-                        <span className="inline-flex items-center gap-1 text-emerald-400 font-semibold">
-                          <BadgeCheck className="w-3.5 h-3.5 shrink-0" />
-                          <span>{listing.verificationBadge}</span>
-                        </span>
+                        {isWaitingApproval ? (
+                          <span className="inline-flex items-center gap-1 text-amber-400 font-semibold">
+                            <Clock className="w-3.5 h-3.5 shrink-0" />
+                            <span>Waiting for admin approval</span>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-emerald-400 font-semibold">
+                            <BadgeCheck className="w-3.5 h-3.5 shrink-0" />
+                            <span>Approved</span>
+                          </span>
+                        )}
                         <span aria-hidden="true">·</span>
                         <span>{listing.intendedUse}</span>
                         <span aria-hidden="true">·</span>
@@ -656,14 +688,26 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                       <Layers className="w-3.5 h-3.5 text-sky-400" />
                       <span>View Deed</span>
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => openBuyModal(listing)}
-                      className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition-colors inline-flex items-center justify-center gap-1.5 whitespace-nowrap shadow-sm shadow-emerald-950/50"
-                    >
-                      <span>Buy Land</span>
-                      <ArrowRight className="w-3.5 h-3.5" />
-                    </button>
+                    {isWaitingApproval ? (
+                      <button
+                        type="button"
+                        disabled
+                        title="Waiting for administrator verification before purchase"
+                        className="px-3 py-2.5 bg-amber-950/50 border border-amber-500/30 text-amber-300 text-[11px] font-semibold rounded-xl inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-not-allowed"
+                      >
+                        <Clock className="w-3.5 h-3.5 shrink-0" />
+                        <span>Pending Approval</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => openBuyModal(listing)}
+                        className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition-colors inline-flex items-center justify-center gap-1.5 whitespace-nowrap shadow-sm shadow-emerald-950/50"
+                      >
+                        <span>Buy Land</span>
+                        <ArrowRight className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
                 </article>
               );
@@ -681,7 +725,9 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                 Federal Republic of Nigeria
               </div>
               <h2 className="text-xl font-serif font-bold text-slate-900 mt-1">
-                CERTIFICATE OF OCCUPANCY (VERIFIED FOR TRANSFER)
+                {deedListing.approvalStatus === 'waiting_admin_approval'
+                  ? 'LAND APPLICATION RECORD (WAITING FOR ADMIN APPROVAL)'
+                  : 'CERTIFICATE OF OCCUPANCY (APPROVED FOR TRANSFER)'}
               </h2>
               <div className="text-xs font-mono text-amber-800 mt-1">
                 Issued pursuant to Land Use Act (1978) · Title Ref #{deedListing.cadastralRef}
@@ -779,17 +825,28 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                   <Printer className="w-3.5 h-3.5" />
                   <span>Print</span>
                 </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const target = deedListing;
-                    setDeedListing(null);
-                    openBuyModal(target);
-                  }}
-                  className="px-4 py-2 bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold rounded-lg"
-                >
-                  Proceed to Buy
-                </button>
+                {deedListing.approvalStatus === 'waiting_admin_approval' ? (
+                  <button
+                    type="button"
+                    disabled
+                    className="px-4 py-2 bg-amber-200 text-amber-900 text-xs font-bold rounded-lg inline-flex items-center gap-1.5 cursor-not-allowed"
+                  >
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>Waiting for admin approval</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const target = deedListing;
+                      setDeedListing(null);
+                      openBuyModal(target);
+                    }}
+                    className="px-4 py-2 bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold rounded-lg"
+                  >
+                    Proceed to Buy
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => setDeedListing(null)}
@@ -1364,18 +1421,29 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                   <Layers className="w-3.5 h-3.5 text-sky-400" />
                   <span>View Deed</span>
                 </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const target = fullMapListing;
-                    setFullMapListing(null);
-                    openBuyModal(target);
-                  }}
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl inline-flex items-center gap-1.5"
-                >
-                  <span>Buy Land</span>
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </button>
+                {fullMapListing.approvalStatus === 'waiting_admin_approval' ? (
+                  <button
+                    type="button"
+                    disabled
+                    className="px-4 py-2 bg-amber-950/60 border border-amber-500/30 text-amber-300 text-xs font-semibold rounded-xl inline-flex items-center gap-1.5 cursor-not-allowed"
+                  >
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>Waiting for admin approval</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const target = fullMapListing;
+                      setFullMapListing(null);
+                      openBuyModal(target);
+                    }}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl inline-flex items-center gap-1.5"
+                  >
+                    <span>Buy Land</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
             </div>
           </div>

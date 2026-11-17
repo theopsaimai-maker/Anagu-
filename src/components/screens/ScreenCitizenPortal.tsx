@@ -493,13 +493,13 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
               </div>
               <div className="space-y-1">
                 <div className="flex flex-wrap items-center gap-2">
-                  <h2 className="text-lg font-bold text-white">Submitted — Pending Admin Verification</h2>
+                  <h2 className="text-lg font-bold text-white">Submitted — Waiting for Admin Approval</h2>
                   <span className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-500/15 border border-amber-500/30 text-amber-300">
-                    Pending Review
+                    Waiting for admin approval
                   </span>
                 </div>
                 <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-                  Your parcel application has been recorded and placed in the Admin verification queue. It will not appear on the Access Lands marketplace until an administrator verifies and publishes it.
+                  Your parcel application has been recorded and now appears on Access Lands marked as <strong className="text-amber-300">Waiting for admin approval</strong>. Once an administrator approves it, its status will change to <strong className="text-emerald-400">Approved</strong> for buyers.
                 </p>
               </div>
             </div>

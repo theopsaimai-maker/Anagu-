@@ -198,6 +198,27 @@ export default function App() {
       window.removeEventListener('storage', handleStorageChange);
     };
   }, []);
+
+  useEffect(() => {
+    if (viewMode !== 'lands') return;
+    let active = true;
+    checkBackendAvailable()
+      .then((ok) => (ok ? apiListParcels() : null))
+      .then((remoteParcels) => {
+        if (!active || !Array.isArray(remoteParcels)) return;
+        setParcels((prev) => {
+          const remoteIds = new Set(remoteParcels.map((p) => p.id));
+          const optimisticOnly = prev.filter((p) => !remoteIds.has(p.id) && p.status === 'draft');
+          return [...optimisticOnly, ...remoteParcels];
+        });
+      })
+      .catch(() => {
+        // Keep current state if backend unavailable
+      });
+    return () => {
+      active = false;
+    };
+  }, [viewMode]);
   const [activePage, setActivePage] = useState<FigmaPageId>('screens');
   const [zoomLevel, setZoomLevel] = useState<number>(0.65);
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 80, y: 60 });

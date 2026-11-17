@@ -117,6 +117,7 @@ export interface VerifiedLandListing {
   spatialHash: string;
   tokenId: number;
   verificationBadge: string;
+  approvalStatus?: 'waiting_admin_approval' | 'approved';
   landmark: string;
   imageUrl: string;
   coordinates?: [number, number][];
