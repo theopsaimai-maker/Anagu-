@@ -18,6 +18,7 @@ import { AccessRoleId, AuthMode, AuthUser } from '../../types/anagu';
 import { ASSET_IMAGES } from '../../data/mockData';
 import { NIGERIA_STATES_AND_LGAS } from '../../data/nigeriaLocations';
 import { apiDemoLogin, apiLogin, apiSignup, isBackendUnavailableError } from '../../lib/api';
+import { saveUserProfileToFirestore, signInWithGooglePopup } from '../../lib/firestoreRegistry';
 
 export interface StoredAuthAccount extends AuthUser {
   password: string;
@@ -327,6 +328,27 @@ export const ScreenAuth: React.FC<Props> = ({
     }
   };
 
+  const handleGoogleSignIn = async () => {
+    setErrorMsg('');
+    setIsSubmitting(true);
+    try {
+      const fbUser = await signInWithGooglePopup();
+      const cloudUser = await saveUserProfileToFirestore(fbUser, selectedRole, {
+        state: stateJurisdiction
+      });
+      onAuthSuccess(cloudUser);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Google Sign-In was cancelled or failed.';
+      if (msg.toLowerCase().includes('popup-closed-by-user')) {
+        setErrorMsg('Google Sign-In popup was closed before completing.');
+      } else {
+        setErrorMsg(msg);
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   return (
     <div className="w-full min-h-screen bg-[#070b12] text-slate-100 flex flex-col font-sans selection:bg-emerald-500/30 selection:text-emerald-300">
       {/* Clean 3-Zone Top Bar */}
@@ -521,6 +543,44 @@ export const ScreenAuth: React.FC<Props> = ({
                     </button>
                   );
                 })}
+              </div>
+            </div>
+
+            {/* Primary Cross-Device Cloud Sign-In */}
+            <div className="space-y-2.5">
+              <button
+                type="button"
+                disabled={isSubmitting}
+                onClick={() => void handleGoogleSignIn()}
+                className="w-full py-3 px-4 bg-white hover:bg-slate-100 disabled:opacity-60 text-slate-900 font-bold text-xs sm:text-sm rounded-xl shadow-md transition-colors flex items-center justify-center gap-2.5 min-h-[44px]"
+              >
+                <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    fill="#4285F4"
+                    d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17Z"
+                  />
+                  <path
+                    fill="#34A853"
+                    d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.11-6.72-4.96H1.29v3.14C3.26 21.3 7.31 24 12 24Z"
+                  />
+                  <path
+                    fill="#FBBC05"
+                    d="M5.28 14.24c-.24-.72-.38-1.49-.38-2.24s.14-1.52.38-2.24V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.99-3.14Z"
+                  />
+                  <path
+                    fill="#EA4335"
+                    d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96Z"
+                  />
+                </svg>
+                <span>Continue with Google (Live Cloud Sync)</span>
+              </button>
+
+              <div className="relative flex items-center py-1">
+                <div className="flex-grow border-t border-slate-800" />
+                <span className="shrink-0 mx-3 text-[10px] uppercase tracking-wider text-slate-500 font-semibold">
+                  Or use Email &amp; Password
+                </span>
+                <div className="flex-grow border-t border-slate-800" />
               </div>
             </div>
 

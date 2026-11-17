@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import { buildApiUrl } from '../../lib/apiBase';
 
 interface OpenStreetMapWidgetProps {
   coordinates: [number, number][]; // [lat, lng]
@@ -54,7 +55,7 @@ export const OpenStreetMapWidget: React.FC<OpenStreetMapWidgetProps> = ({
       touchZoom: interactive
     });
 
-    L.tileLayer('/api/osm-tile/{z}/{x}/{y}.png', {
+    L.tileLayer(buildApiUrl('/api/osm-tile/{z}/{x}/{y}.png'), {
       maxZoom: 19,
       attribution: '&copy; OpenStreetMap'
     }).addTo(map);

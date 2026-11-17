@@ -43,6 +43,8 @@ import { describeParcelGeography } from '../../lib/geoDescription';
 interface Props {
   parcels: ParcelRecord[];
   currentUser?: AuthUser | null;
+  isCloudConnected?: boolean;
+  onConnectGoogleSync?: () => Promise<void>;
   onNewParcelSubmit: (newParcel: ParcelRecord) => Promise<ParcelRecord> | void;
   onSelectParcel: (parcel: ParcelRecord) => void;
   selectedParcelId?: string;
@@ -114,6 +116,8 @@ function parseDemarcationPolygon(raw: string): {
 
 export const ScreenCitizenPortal: React.FC<Props> = ({
   currentUser,
+  isCloudConnected = false,
+  onConnectGoogleSync,
   onNewParcelSubmit,
   onSelectParcelId,
   onNextStep,
@@ -162,6 +166,17 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
   const [formError, setFormError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submittedParcel, setSubmittedParcel] = useState<ParcelRecord | null>(null);
+  const [isLinkingCloud, setIsLinkingCloud] = useState(false);
+
+  const handleLinkCloudClick = async () => {
+    if (!onConnectGoogleSync) return;
+    setIsLinkingCloud(true);
+    try {
+      await onConnectGoogleSync();
+    } finally {
+      setIsLinkingCloud(false);
+    }
+  };
 
   const livePolygon = useMemo(
     () => parseDemarcationPolygon(landDemarcation.trim()),
@@ -514,6 +529,30 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
           <p className="text-xs sm:text-sm text-slate-400 max-w-xl mx-auto leading-relaxed">
             Complete your applicant record, describe the land demarcation and exact location, and upload your official survey plan document.
           </p>
+
+          {onConnectGoogleSync && (
+            <div className="pt-1 flex justify-center">
+              {isCloudConnected ? (
+                <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-emerald-950/60 border border-emerald-500/40 text-[11px] font-semibold text-emerald-300">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <span>Live Cloud Database Connected · Instant Admin Sync</span>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  disabled={isLinkingCloud}
+                  onClick={() => void handleLinkCloudClick()}
+                  className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-slate-900 hover:bg-slate-800 border border-emerald-500/40 text-[11px] font-semibold text-emerald-300 transition-colors disabled:opacity-60"
+                >
+                  <span>
+                    {isLinkingCloud
+                      ? 'Connecting Google Cloud Sync...'
+                      : 'Connect Google Cloud Sync for Instant Cross-Device Admin Visibility'}
+                  </span>
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Success Receipt Card OR Centered Registration Form */}

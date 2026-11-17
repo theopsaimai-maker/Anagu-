@@ -1,0 +1,194 @@
+{
+  "entities": {
+    "Parcel": {
+      "title": "Parcel",
+      "description": "Public cadastral land parcel record stored in the shared cloud registry without sensitive citizen PII.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 3, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "cadastralRef": { "type": "string", "minLength": 3, "maxLength": 100 },
+        "applicantName": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "applicantNinMasked": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "state": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "lga": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "district": { "type": "string", "maxLength": 200 },
+        "areaSqm": { "type": "number" },
+        "perimeterM": { "type": "number" },
+        "coordinates": { "type": "array", "description": "Bounded polygon vertices [{lat, lng}]" },
+        "beacons": { "type": "array", "description": "Bounded survey monument points" },
+        "spatialHash": { "type": "string", "maxLength": 128 },
+        "documentHash": { "type": "string", "maxLength": 128 },
+        "surveyPlanRef": { "type": "string", "maxLength": 120 },
+        "intendedUse": {
+          "type": "string",
+          "enum": ["Residential", "Commercial", "Agricultural", "Industrial", "Public Utility"]
+        },
+        "priceUsd": { "type": "number" },
+        "sellerWallet": { "type": "string", "maxLength": 64, "pattern": "^0x[0-9a-fA-F]{40}$" },
+        "mapSnapshotUrl": { "type": "string", "maxLength": 350000 },
+        "status": {
+          "type": "string",
+          "enum": ["draft", "spatial_verified", "oracle_verified", "legal_approved", "registered", "revoked", "rejected"]
+        },
+        "visibility": { "type": "string", "enum": ["public"] },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "tokenId": { "type": "number" },
+        "txHash": { "type": "string", "maxLength": 128 },
+        "blockNumber": { "type": "number" },
+        "issuanceTimestamp": { "type": "string", "maxLength": 80 },
+        "revocationData": { "type": "object" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "cadastralRef",
+        "applicantName",
+        "state",
+        "lga",
+        "areaSqm",
+        "perimeterM",
+        "coordinates",
+        "beacons",
+        "spatialHash",
+        "documentHash",
+        "surveyPlanRef",
+        "intendedUse",
+        "status",
+        "visibility",
+        "ownerUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ParcelIdentity": {
+      "title": "ParcelIdentity",
+      "description": "Restricted identity verification details for a parcel, isolated from public parcel listings.",
+      "type": "object",
+      "properties": {
+        "parcelId": { "type": "string", "minLength": 3, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "applicantNin": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["parcelId", "applicantNin", "ownerUid", "createdAt"]
+    },
+    "RegistryUser": {
+      "title": "RegistryUser",
+      "description": "Non-PII operational user directory record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "fullName": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "role": { "type": "string", "enum": ["citizen", "surveyor", "oracle"] },
+        "state": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "credentialMask": { "type": "string", "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "fullName", "role", "state", "createdAt", "updatedAt"]
+    },
+    "RegistryUserPrivate": {
+      "title": "RegistryUserPrivate",
+      "description": "Private PII profile for a user, restricted to the user owner and administrators.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "format": "email", "maxLength": 180 },
+        "phone": { "type": "string", "maxLength": 40 },
+        "credentialId": { "type": "string", "maxLength": 120 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "phone", "credentialId", "ownerUid", "createdAt", "updatedAt"]
+    },
+    "AdminProfile": {
+      "title": "AdminProfile",
+      "description": "Verified administrator account allowed to manage parcel approvals and registry users.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 180 },
+        "fullName": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "email": { "type": "string", "format": "email", "maxLength": 180 },
+        "phone": { "type": "string", "maxLength": 40 },
+        "department": { "type": "string", "maxLength": 160 },
+        "state": { "type": "string", "maxLength": 100 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "fullName", "email", "department", "state", "createdAt"]
+    },
+    "PurchaseInquiry": {
+      "title": "PurchaseInquiry",
+      "description": "Buyer land reservation and Web3 purchase notification record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 3, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "buyerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "name": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "phone": { "type": "string", "minLength": 4, "maxLength": 40 },
+        "email": { "type": "string", "maxLength": 180 },
+        "state": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "message": { "type": "string", "maxLength": 4000 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "buyerUid", "name", "phone", "state", "createdAt"]
+    },
+    "MqttEvent": {
+      "title": "MqttEvent",
+      "description": "Public registry lifecycle telemetry event.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 3, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "topic": {
+          "type": "string",
+          "enum": [
+            "land/registration/status",
+            "land/title/issued",
+            "land/title/revoked",
+            "land/verification/oracle",
+            "land/notification/titleholder"
+          ]
+        },
+        "payload": { "type": "object" },
+        "qos": { "type": "number" },
+        "timestamp": { "type": "string", "maxLength": 40 },
+        "deliveryLatencyMs": { "type": "number" },
+        "status": { "type": "string", "enum": ["delivered", "buffered_offline", "retransmitted"] },
+        "visibility": { "type": "string", "enum": ["public"] },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "topic", "payload", "qos", "timestamp", "deliveryLatencyMs", "status", "visibility", "ownerUid", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/parcels/{parcelId}": {
+      "schema": { "$ref": "#/entities/Parcel" },
+      "description": "Shared cloud land parcel registry visible to main dashboard, Access Lands, and Admin console."
+    },
+    "/parcel_identities/{parcelId}": {
+      "schema": { "$ref": "#/entities/ParcelIdentity" },
+      "description": "Isolated applicant identity document (NIN) restricted to owner and administrators."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/RegistryUser" },
+      "description": "Operational role records for citizens, surveyors, and community oracle elders."
+    },
+    "/users/{userId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/RegistryUserPrivate" },
+      "description": "Private PII details (email, phone, statutory credential ID) isolated per user."
+    },
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/AdminProfile" },
+      "description": "Administrator authorization directory."
+    },
+    "/inquiries/{inquiryId}": {
+      "schema": { "$ref": "#/entities/PurchaseInquiry" },
+      "description": "Buyer land reservations and Web3 payment notices restricted to buyer and admins."
+    },
+    "/mqtt_events/{eventId}": {
+      "schema": { "$ref": "#/entities/MqttEvent" },
+      "description": "Real-time registry telemetry and audit log."
+    }
+  }
+}

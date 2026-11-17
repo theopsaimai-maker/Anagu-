@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Compass } from 'lucide-react';
 import { describeParcelGeography } from '../../lib/geoDescription';
+import { buildApiUrl } from '../../lib/apiBase';
 
 interface LandRegistrySnapshotProps {
   coordinates: [number, number][];
@@ -357,7 +358,7 @@ export const LandRegistrySnapshot: React.FC<LandRegistrySnapshotProps> = ({
         const dx = Math.round(tx * 256 - topLeftWorldX);
         const dy = Math.round(ty * 256 - topLeftWorldY);
         tilePromises.push(
-          loadTile(`/api/osm-tile/${zoom}/${tx}/${ty}.png`).then((img) => ({ dx, dy, img }))
+          loadTile(buildApiUrl(`/api/osm-tile/${zoom}/${tx}/${ty}.png`)).then((img) => ({ dx, dy, img }))
         );
       }
     }

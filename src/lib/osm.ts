@@ -1,4 +1,5 @@
 import { normalizeNigeriaState } from '../data/nigeriaLocations';
+import { buildApiUrl } from './apiBase';
 
 export const STATE_COORDINATES: Record<string, [number, number]> = {
   'Abia State': [5.5320, 7.4860],
@@ -98,7 +99,7 @@ export async function searchNigerianLandmarks(
   const queries = [`${trimmed}, ${cleanState}, Nigeria`, `${trimmed}, Nigeria`];
   for (const q of queries) {
     try {
-      const res = await fetch(`/api/geocode-search?q=${encodeURIComponent(q)}`, {
+      const res = await fetch(buildApiUrl(`/api/geocode-search?q=${encodeURIComponent(q)}`), {
         signal: AbortSignal.timeout(5000)
       });
       if (!res.ok) continue;
@@ -115,7 +116,7 @@ export async function searchNigerianLandmarks(
 
 async function queryGeocodeApi(query: string): Promise<{ lat: number; lng: number; displayName: string } | null> {
   try {
-    const res = await fetch(`/api/geocode?q=${encodeURIComponent(query)}`, {
+    const res = await fetch(buildApiUrl(`/api/geocode?q=${encodeURIComponent(query)}`), {
       signal: AbortSignal.timeout(5500)
     });
     if (!res.ok) return null;
@@ -308,7 +309,7 @@ export async function captureOsmMapSnapshot(
       const dx = Math.round(tx * 256 - topLeftWorldX);
       const dy = Math.round(ty * 256 - topLeftWorldY);
       tilePromises.push(
-        loadTileImage(`/api/osm-tile/${zoom}/${tx}/${ty}.png`).then((img) => ({ dx, dy, img }))
+        loadTileImage(buildApiUrl(`/api/osm-tile/${zoom}/${tx}/${ty}.png`)).then((img) => ({ dx, dy, img }))
       );
     }
   }

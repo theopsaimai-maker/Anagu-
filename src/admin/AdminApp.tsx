@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { onAuthStateChanged } from 'firebase/auth';
 import {
   Activity,
   AlertCircle,
@@ -7,6 +8,7 @@ import {
   Building2,
   CheckCircle2,
   Clock,
+  Cloud,
   CreditCard,
   Eye,
   EyeOff,
@@ -40,11 +42,12 @@ import type {
   ParcelRecord,
   RevocationGround
 } from '../types/anagu';
-import { ASSET_IMAGES } from '../data/mockData';
+import { ASSET_IMAGES, INITIAL_PARCELS } from '../data/mockData';
 import { NIGERIA_STATES_AND_LGAS } from '../data/nigeriaLocations';
 import { OpenStreetMapWidget } from '../components/maps/OpenStreetMapWidget';
 import { LandRegistrySnapshot } from '../components/maps/LandRegistrySnapshot';
 import { describeParcelGeography } from '../lib/geoDescription';
+import { apiListMqttMessages, apiListParcels } from '../lib/api';
 import {
   ADMIN_TOKEN_KEY,
   ADMIN_USER_KEY,
@@ -62,6 +65,30 @@ import {
   apiAdminUpdateUserRole,
   apiAdminVerifyParcel
 } from '../lib/adminApi';
+import { auth } from '../lib/firebase';
+import {
+  addAuthorizedAdminEmail,
+  adminDeleteInquiryInFirestore,
+  adminDeleteParcelInFirestore,
+  adminDeleteUserInFirestore,
+  adminRejectParcelInFirestore,
+  adminRevokeParcelInFirestore,
+  adminSetParcelPendingInFirestore,
+  adminUpdateUserRoleInFirestore,
+  adminVerifyParcelInFirestore,
+  BOOTSTRAPPED_ADMIN_EMAIL,
+  checkIsFirebaseAdmin,
+  ensureAdminProfileInFirestore,
+  fetchAdminsFromFirestore,
+  fetchAdminUsersFromFirestore,
+  fetchInquiriesFromFirestore,
+  mergeParcelLists,
+  signInWithGooglePopup,
+  signOutFirebaseUser,
+  subscribeFirestoreMqttEvents,
+  subscribeFirestoreParcels,
+  syncParcelsToFirestore
+} from '../lib/firestoreRegistry';
 
 type AdminTab = 'overview' | 'lands' | 'purchases' | 'users' | 'audit';
 type LandFilter = 'pending' | 'registered' | 'rejected' | 'revoked' | 'all';
@@ -120,12 +147,16 @@ export const AdminApp: React.FC = () => {
     try {
       const token = localStorage.getItem(ADMIN_TOKEN_KEY);
       const saved = localStorage.getItem(ADMIN_USER_KEY);
-      if (token && saved) return JSON.parse(saved) as AdminUser;
+      if (token && saved && !token.startsWith('local-admin-')) {
+        return JSON.parse(saved) as AdminUser;
+      }
     } catch {
       // Ignore invalid local state
     }
     return null;
   });
+
+  const [isCloudAdmin, setIsCloudAdmin] = useState(false);
 
   // Auth state
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
@@ -161,12 +192,33 @@ export const AdminApp: React.FC = () => {
     text: string;
   } | null>(null);
 
+  // Authorize additional Google Admin email
+  const [inviteAdminEmail, setInviteAdminEmail] = useState('');
+  const [inviteAdminName, setInviteAdminName] = useState('');
+  const [isInvitingAdmin, setIsInvitingAdmin] = useState(false);
+
   // Modals
   const [inspectParcel, setInspectParcel] = useState<ParcelRecord | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<ParcelRecord | null>(null);
   const [revokeGround, setRevokeGround] = useState<RevocationGround>('OverridingPublicInterest');
   const [revokeGazette, setRevokeGazette] = useState('Federal Gazette Notice No. 2026-ADM');
   const [revokeReason, setRevokeReason] = useState('');
+
+  const cloudParcelsRef = useRef<ParcelRecord[]>([]);
+  const expressParcelsRef = useRef<ParcelRecord[]>([]);
+  const deletedParcelIdsRef = useRef<Set<string>>(new Set());
+  const seededInitialCloudRef = useRef(false);
+
+  const recomputeMergedParcels = useCallback(() => {
+    const cloudList = cloudParcelsRef.current.filter(
+      (p) => !deletedParcelIdsRef.current.has(p.id)
+    );
+    const expressList = expressParcelsRef.current.filter(
+      (p) => !deletedParcelIdsRef.current.has(p.id)
+    );
+    const merged = mergeParcelLists(cloudList, expressList);
+    setParcels(merged);
+  }, []);
 
   const persistSession = (admin: AdminUser, token: string) => {
     localStorage.setItem(ADMIN_TOKEN_KEY, token);
@@ -178,6 +230,8 @@ export const AdminApp: React.FC = () => {
     localStorage.removeItem(ADMIN_TOKEN_KEY);
     localStorage.removeItem(ADMIN_USER_KEY);
     setAdminUser(null);
+    setIsCloudAdmin(false);
+    void signOutFirebaseUser();
   }, []);
 
   const [isOfflineMode, setIsOfflineMode] = useState(false);
@@ -186,37 +240,186 @@ export const AdminApp: React.FC = () => {
     async (quiet = false) => {
       if (!quiet) setIsLoadingData(true);
       try {
-        const data = await apiAdminOverview();
-        setParcels(data.parcels);
-        setUsers(data.users);
-        setInquiries(data.inquiries);
-        setMqttMessages(data.mqttMessages);
-        setAdmins(data.admins);
-        setIsOfflineMode(Boolean(data.isOfflineFallback));
-        setLastSyncedAt(new Date(data.serverTime).toLocaleTimeString());
+        const hasExpressToken = Boolean(
+          typeof window !== 'undefined' &&
+            localStorage.getItem(ADMIN_TOKEN_KEY) &&
+            localStorage.getItem(ADMIN_TOKEN_KEY) !== 'firebase-cloud-session'
+        );
+
+        let expressSucceeded = false;
+        let cloudSucceeded = false;
+
+        // 1. Fetch Express API overview (when signed into Express backend) OR public Express parcels
+        if (hasExpressToken) {
+          try {
+            const data = await apiAdminOverview();
+            expressSucceeded = true;
+            expressParcelsRef.current = data.parcels;
+            setUsers((prev) => {
+              const map = new Map<string, AuthUser>();
+              for (const u of data.users) map.set(u.id, u);
+              for (const u of prev) if (!map.has(u.id)) map.set(u.id, u);
+              return Array.from(map.values());
+            });
+            setInquiries((prev) => {
+              const map = new Map<string, AdminInquiryRecord>();
+              for (const i of data.inquiries) map.set(i.id, i);
+              for (const i of prev) if (!map.has(i.id)) map.set(i.id, i);
+              return Array.from(map.values()).sort((a, b) =>
+                b.createdAt.localeCompare(a.createdAt)
+              );
+            });
+            setMqttMessages((prev) => {
+              const map = new Map<string, MqttMessage>();
+              for (const m of data.mqttMessages) map.set(m.id, m);
+              for (const m of prev) if (!map.has(m.id)) map.set(m.id, m);
+              return Array.from(map.values()).sort((a, b) => b.id.localeCompare(a.id));
+            });
+            setAdmins((prev) => {
+              const map = new Map<string, AdminUser>();
+              for (const a of data.admins) map.set(a.email.toLowerCase(), a);
+              for (const a of prev) {
+                const k = a.email.toLowerCase();
+                if (!map.has(k)) map.set(k, a);
+              }
+              return Array.from(map.values());
+            });
+          } catch (err) {
+            if (err instanceof AdminAuthError) {
+              if (!isCloudAdmin) {
+                clearSession();
+                setAuthError(
+                  'Your Express admin session expired. Sign in with Google (Live Cloud Database) or re-enter your admin password.'
+                );
+                return;
+              }
+              localStorage.removeItem(ADMIN_TOKEN_KEY);
+            }
+          }
+        } else {
+          // Probe public Express parcels + MQTT when available (migrates legacy server parcels like BAU/ALKA/2026-865)
+          try {
+            const [pubParcels, pubMqtt] = await Promise.all([
+              apiListParcels(),
+              apiListMqttMessages()
+            ]);
+            expressSucceeded = true;
+            expressParcelsRef.current = pubParcels;
+            if (pubMqtt.length > 0) {
+              setMqttMessages((prev) => {
+                const map = new Map<string, MqttMessage>();
+                for (const m of prev) map.set(m.id, m);
+                for (const m of pubMqtt) if (!map.has(m.id)) map.set(m.id, m);
+                return Array.from(map.values()).sort((a, b) => b.id.localeCompare(a.id));
+              });
+            }
+          } catch {
+            // Normal on static split-domain deployment — Cloud Firestore handles live data
+          }
+        }
+
+        // 2. Fetch Cloud Firestore collections when Cloud Admin is signed in
+        if (isCloudAdmin || auth.currentUser?.emailVerified) {
+          cloudSucceeded = true;
+
+          // Migrate Express server parcels + initial registry seed into Cloud Firestore once
+          const initialBundle = seededInitialCloudRef.current ? [] : INITIAL_PARCELS;
+          const expressToSync = expressParcelsRef.current.filter(
+            (p) => !deletedParcelIdsRef.current.has(p.id)
+          );
+          const toSeed = [...expressToSync, ...initialBundle];
+          if (toSeed.length > 0) {
+            await syncParcelsToFirestore(toSeed, { isAdminSync: true }).catch(() => undefined);
+            seededInitialCloudRef.current = true;
+          }
+
+          const [cloudUsers, cloudInquiries, cloudAdmins] = await Promise.all([
+            fetchAdminUsersFromFirestore().catch(() => [] as AuthUser[]),
+            fetchInquiriesFromFirestore().catch(() => [] as AdminInquiryRecord[]),
+            fetchAdminsFromFirestore().catch(() => [] as AdminUser[])
+          ]);
+
+          if (cloudUsers.length > 0) {
+            setUsers((prev) => {
+              const map = new Map<string, AuthUser>();
+              for (const u of cloudUsers) map.set(u.id, u);
+              for (const u of prev) if (!map.has(u.id)) map.set(u.id, u);
+              return Array.from(map.values());
+            });
+          }
+          if (cloudInquiries.length > 0) {
+            setInquiries((prev) => {
+              const map = new Map<string, AdminInquiryRecord>();
+              for (const i of cloudInquiries) map.set(i.id, i);
+              for (const i of prev) if (!map.has(i.id)) map.set(i.id, i);
+              return Array.from(map.values()).sort((a, b) =>
+                b.createdAt.localeCompare(a.createdAt)
+              );
+            });
+          }
+          if (cloudAdmins.length > 0) {
+            setAdmins((prev) => {
+              const map = new Map<string, AdminUser>();
+              for (const a of cloudAdmins) map.set(a.email.toLowerCase(), a);
+              for (const a of prev) {
+                const k = a.email.toLowerCase();
+                if (!map.has(k)) map.set(k, a);
+              }
+              return Array.from(map.values());
+            });
+          }
+        }
+
+        recomputeMergedParcels();
+        setIsOfflineMode(!cloudSucceeded && !expressSucceeded);
+        setLastSyncedAt(new Date().toLocaleTimeString());
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unable to fetch monitoring data.';
-        if (
-          err instanceof AdminAuthError ||
-          message.toLowerCase().includes('authentication') ||
-          message.toLowerCase().includes('expired')
-        ) {
-          clearSession();
-          setAuthError('Your admin session expired or the server restarted. Please sign in again.');
-        } else if (!quiet) {
+        if (!quiet) {
           setFeedbackBanner({ type: 'error', text: message });
         }
       } finally {
         if (!quiet) setIsLoadingData(false);
       }
     },
-    [clearSession]
+    [clearSession, isCloudAdmin, recomputeMergedParcels]
   );
 
-  // Verify existing admin session on mount
+  // Restore Firebase Google Admin session cleanly across reloads & devices
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (fbUser) => {
+      if (!fbUser || !fbUser.emailVerified) {
+        return;
+      }
+      const allowed = await checkIsFirebaseAdmin(fbUser);
+      if (!allowed) {
+        return;
+      }
+      try {
+        const profile = await ensureAdminProfileInFirestore(fbUser);
+        setAdminUser(profile);
+        setIsCloudAdmin(true);
+        localStorage.setItem(ADMIN_USER_KEY, JSON.stringify(profile));
+        if (!localStorage.getItem(ADMIN_TOKEN_KEY)) {
+          localStorage.setItem(ADMIN_TOKEN_KEY, 'firebase-cloud-session');
+        }
+      } catch {
+        // Non-blocking
+      }
+    });
+    return unsub;
+  }, []);
+
+  // Verify existing Express admin session on mount (if present)
   useEffect(() => {
     const token = localStorage.getItem(ADMIN_TOKEN_KEY);
-    if (!token) return;
+    if (!token || token === 'firebase-cloud-session') return;
+    if (token.startsWith('local-admin-')) {
+      localStorage.removeItem(ADMIN_TOKEN_KEY);
+      localStorage.removeItem(ADMIN_USER_KEY);
+      setAdminUser(null);
+      return;
+    }
     let active = true;
     apiAdminMe()
       .then((res) => {
@@ -226,27 +429,60 @@ export const AdminApp: React.FC = () => {
       })
       .catch((err) => {
         if (!active) return;
-        const msg = err instanceof Error ? err.message.toLowerCase() : '';
-        if (
-          err instanceof AdminAuthError ||
-          msg.includes('authentication') ||
-          msg.includes('expired')
-        ) {
-          clearSession();
-          setAuthError('Your admin session expired. Please sign in to view live registry applications.');
+        if (err instanceof AdminAuthError) {
+          if (!isCloudAdmin) {
+            clearSession();
+            setAuthError('Your admin session expired. Please sign in to view live registry applications.');
+          } else {
+            localStorage.removeItem(ADMIN_TOKEN_KEY);
+          }
         }
       });
     return () => {
       active = false;
     };
-  }, [clearSession]);
+  }, [clearSession, isCloudAdmin]);
 
-  // Initial overview load + live auto-polling + focus/visibility sync
+  // Real-time Cloud Firestore parcel & MQTT listeners + overview refresh
   const adminUserId = adminUser?.id;
   useEffect(() => {
     if (!adminUserId) return;
+
+    const unsubParcels = subscribeFirestoreParcels(
+      (cloudList) => {
+        cloudParcelsRef.current = cloudList;
+        recomputeMergedParcels();
+        setIsOfflineMode(false);
+        setLastSyncedAt(new Date().toLocaleTimeString());
+      },
+      () => {
+        // Non-blocking error handler
+      }
+    );
+
+    const unsubMqtt = subscribeFirestoreMqttEvents(
+      (cloudEvents) => {
+        if (cloudEvents.length === 0) return;
+        setMqttMessages((prev) => {
+          const map = new Map<string, MqttMessage>();
+          for (const m of cloudEvents) map.set(m.id, m);
+          for (const m of prev) if (!map.has(m.id)) map.set(m.id, m);
+          return Array.from(map.values()).sort((a, b) => b.id.localeCompare(a.id));
+        });
+      },
+      () => {
+        // Non-blocking
+      }
+    );
+
     void fetchOverview(false);
-    if (!autoSync) return;
+    if (!autoSync) {
+      return () => {
+        unsubParcels();
+        unsubMqtt();
+      };
+    }
+
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
         void fetchOverview(true);
@@ -254,15 +490,47 @@ export const AdminApp: React.FC = () => {
     };
     const timer = window.setInterval(() => {
       void fetchOverview(true);
-    }, 6000);
+    }, 8000);
     window.addEventListener('focus', handleVisibility);
     document.addEventListener('visibilitychange', handleVisibility);
     return () => {
+      unsubParcels();
+      unsubMqtt();
       window.clearInterval(timer);
       window.removeEventListener('focus', handleVisibility);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [adminUserId, autoSync, fetchOverview]);
+  }, [adminUserId, isCloudAdmin, autoSync, fetchOverview, recomputeMergedParcels]);
+
+  const handleGoogleAdminLogin = async () => {
+    setAuthError(null);
+    setFeedbackBanner(null);
+    setIsAuthBusy(true);
+    try {
+      const fbUser = await signInWithGooglePopup();
+      const allowed = await checkIsFirebaseAdmin(fbUser);
+      if (!allowed) {
+        await signOutFirebaseUser();
+        setAuthError(
+          `The Google account "${fbUser.email || 'selected account'}" is not yet authorized as a Registry Admin. Sign in with the owner account (${BOOTSTRAPPED_ADMIN_EMAIL}) or ask an authorized admin to add your email under Users & Admins.`
+        );
+        return;
+      }
+      const profile = await ensureAdminProfileInFirestore(fbUser);
+      setIsCloudAdmin(true);
+      setIsOfflineMode(false);
+      localStorage.setItem(ADMIN_USER_KEY, JSON.stringify(profile));
+      if (!localStorage.getItem(ADMIN_TOKEN_KEY)) {
+        localStorage.setItem(ADMIN_TOKEN_KEY, 'firebase-cloud-session');
+      }
+      setAdminUser(profile);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Google Admin sign-in failed.';
+      setAuthError(msg);
+    } finally {
+      setIsAuthBusy(false);
+    }
+  };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -315,12 +583,23 @@ export const AdminApp: React.FC = () => {
     setActionBusyId(parcel.id);
     setFeedbackBanner(null);
     try {
-      const updated = await apiAdminVerifyParcel(parcel.id);
-      setParcels((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+      let updated: ParcelRecord | null = null;
+      if (isCloudAdmin) {
+        // Ensure parcel exists in Firestore first in case it came from Express/local
+        if (!cloudParcelsRef.current.some((p) => p.id === parcel.id)) {
+          await syncParcelsToFirestore([parcel], { isAdminSync: true }).catch(() => undefined);
+        }
+        updated = await adminVerifyParcelInFirestore(parcel);
+        void apiAdminVerifyParcel(parcel.id).catch(() => undefined);
+      } else {
+        updated = await apiAdminVerifyParcel(parcel.id);
+      }
+
+      setParcels((prev) => prev.map((p) => (p.id === updated!.id ? updated! : p)));
       if (inspectParcel?.id === updated.id) setInspectParcel(updated);
       setFeedbackBanner({
         type: 'success',
-        text: `Verified ${updated.cadastralRef} — now published on Access Lands.`
+        text: `Verified ${updated.cadastralRef} — now published live as Approved on Access Lands.`
       });
       void fetchOverview(true);
     } catch (err) {
@@ -337,8 +616,18 @@ export const AdminApp: React.FC = () => {
     setActionBusyId(parcel.id);
     setFeedbackBanner(null);
     try {
-      const updated = await apiAdminRejectParcel(parcel.id, 'Rejected by Registry Admin');
-      setParcels((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+      let updated: ParcelRecord | null = null;
+      if (isCloudAdmin) {
+        if (!cloudParcelsRef.current.some((p) => p.id === parcel.id)) {
+          await syncParcelsToFirestore([parcel], { isAdminSync: true }).catch(() => undefined);
+        }
+        updated = await adminRejectParcelInFirestore(parcel, 'Rejected by Registry Admin');
+        void apiAdminRejectParcel(parcel.id, 'Rejected by Registry Admin').catch(() => undefined);
+      } else {
+        updated = await apiAdminRejectParcel(parcel.id, 'Rejected by Registry Admin');
+      }
+
+      setParcels((prev) => prev.map((p) => (p.id === updated!.id ? updated! : p)));
       if (inspectParcel?.id === updated.id) setInspectParcel(updated);
       setFeedbackBanner({
         type: 'success',
@@ -359,12 +648,18 @@ export const AdminApp: React.FC = () => {
     setActionBusyId(parcel.id);
     setFeedbackBanner(null);
     try {
-      const updated = await apiAdminSetParcelPending(parcel.id);
-      setParcels((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+      let updated: ParcelRecord | null = null;
+      if (isCloudAdmin) {
+        updated = await adminSetParcelPendingInFirestore(parcel);
+        void apiAdminSetParcelPending(parcel.id).catch(() => undefined);
+      } else {
+        updated = await apiAdminSetParcelPending(parcel.id);
+      }
+      setParcels((prev) => prev.map((p) => (p.id === updated!.id ? updated! : p)));
       if (inspectParcel?.id === updated.id) setInspectParcel(updated);
       setFeedbackBanner({
         type: 'success',
-        text: `Moved ${updated.cadastralRef} back to Pending Admin Verification (unpublished from Access Lands).`
+        text: `Moved ${updated.cadastralRef} back to Pending Admin Verification.`
       });
     } catch (err) {
       setFeedbackBanner({
@@ -381,14 +676,31 @@ export const AdminApp: React.FC = () => {
     if (!revokeTarget) return;
     setActionBusyId(revokeTarget.id);
     setFeedbackBanner(null);
+    const reasonText = revokeReason.trim() || 'Administrative revocation executed from Admin Console';
     try {
-      const updated = await apiAdminRevokeParcel(
-        revokeTarget.id,
-        revokeGround,
-        revokeGazette.trim(),
-        revokeReason.trim() || 'Administrative revocation executed from Admin Console'
-      );
-      setParcels((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+      let updated: ParcelRecord | null = null;
+      if (isCloudAdmin) {
+        updated = await adminRevokeParcelInFirestore(
+          revokeTarget,
+          revokeGround,
+          revokeGazette.trim(),
+          reasonText
+        );
+        void apiAdminRevokeParcel(
+          revokeTarget.id,
+          revokeGround,
+          revokeGazette.trim(),
+          reasonText
+        ).catch(() => undefined);
+      } else {
+        updated = await apiAdminRevokeParcel(
+          revokeTarget.id,
+          revokeGround,
+          revokeGazette.trim(),
+          reasonText
+        );
+      }
+      setParcels((prev) => prev.map((p) => (p.id === updated!.id ? updated! : p)));
       setRevokeTarget(null);
       setRevokeReason('');
       setFeedbackBanner({
@@ -409,7 +721,13 @@ export const AdminApp: React.FC = () => {
   const handleDeleteParcel = async (parcel: ParcelRecord) => {
     setActionBusyId(parcel.id);
     try {
-      await apiAdminDeleteParcel(parcel.id);
+      deletedParcelIdsRef.current.add(parcel.id);
+      if (isCloudAdmin) {
+        await adminDeleteParcelInFirestore(parcel.id);
+        void apiAdminDeleteParcel(parcel.id).catch(() => undefined);
+      } else {
+        await apiAdminDeleteParcel(parcel.id);
+      }
       setParcels((prev) => prev.filter((p) => p.id !== parcel.id));
       if (inspectParcel?.id === parcel.id) setInspectParcel(null);
       setFeedbackBanner({
@@ -417,6 +735,7 @@ export const AdminApp: React.FC = () => {
         text: `Removed parcel ${parcel.cadastralRef} from registry.`
       });
     } catch (err) {
+      deletedParcelIdsRef.current.delete(parcel.id);
       setFeedbackBanner({
         type: 'error',
         text: err instanceof Error ? err.message : 'Failed to delete parcel.'
@@ -429,7 +748,13 @@ export const AdminApp: React.FC = () => {
   const handleChangeUserRole = async (userId: string, role: AccessRoleId) => {
     setActionBusyId(userId);
     try {
-      const updated = await apiAdminUpdateUserRole(userId, role);
+      let updated: AuthUser;
+      if (isCloudAdmin) {
+        updated = await adminUpdateUserRoleInFirestore(userId, role);
+        void apiAdminUpdateUserRole(userId, role).catch(() => undefined);
+      } else {
+        updated = await apiAdminUpdateUserRole(userId, role);
+      }
       setUsers((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
       setFeedbackBanner({
         type: 'success',
@@ -448,7 +773,12 @@ export const AdminApp: React.FC = () => {
   const handleDeleteUser = async (user: AuthUser) => {
     setActionBusyId(user.id);
     try {
-      await apiAdminDeleteUser(user.id);
+      if (isCloudAdmin) {
+        await adminDeleteUserInFirestore(user.id);
+        void apiAdminDeleteUser(user.id).catch(() => undefined);
+      } else {
+        await apiAdminDeleteUser(user.id);
+      }
       setUsers((prev) => prev.filter((u) => u.id !== user.id));
       setFeedbackBanner({
         type: 'success',
@@ -467,7 +797,12 @@ export const AdminApp: React.FC = () => {
   const handleDeleteInquiry = async (inquiryId: string) => {
     setActionBusyId(inquiryId);
     try {
-      await apiAdminDeleteInquiry(inquiryId);
+      if (isCloudAdmin) {
+        await adminDeleteInquiryInFirestore(inquiryId);
+        void apiAdminDeleteInquiry(inquiryId).catch(() => undefined);
+      } else {
+        await apiAdminDeleteInquiry(inquiryId);
+      }
       setInquiries((prev) => prev.filter((i) => i.id !== inquiryId));
       setFeedbackBanner({ type: 'success', text: 'Purchase/inquiry record archived.' });
     } catch (err) {
@@ -477,6 +812,37 @@ export const AdminApp: React.FC = () => {
       });
     } finally {
       setActionBusyId(null);
+    }
+  };
+
+  const handleAuthorizeGoogleAdmin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inviteAdminEmail.trim()) return;
+    setIsInvitingAdmin(true);
+    setFeedbackBanner(null);
+    try {
+      const added = await addAuthorizedAdminEmail({
+        email: inviteAdminEmail.trim(),
+        fullName: inviteAdminName.trim() || inviteAdminEmail.trim(),
+        state: adminUser?.state
+      });
+      setAdmins((prev) => {
+        const next = prev.filter((a) => a.email.toLowerCase() !== added.email.toLowerCase());
+        return [added, ...next];
+      });
+      setInviteAdminEmail('');
+      setInviteAdminName('');
+      setFeedbackBanner({
+        type: 'success',
+        text: `Authorized ${added.email} to sign in with Google Admin on any PC.`
+      });
+    } catch (err) {
+      setFeedbackBanner({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Failed to authorize admin email.'
+      });
+    } finally {
+      setIsInvitingAdmin(false);
     }
   };
 
@@ -604,6 +970,47 @@ export const AdminApp: React.FC = () => {
                 >
                   Sign Up
                 </button>
+              </div>
+            </div>
+
+            {/* Primary Cross-Device Cloud Database Admin Sign-In */}
+            <div className="space-y-3">
+              <button
+                type="button"
+                disabled={isAuthBusy}
+                onClick={() => void handleGoogleAdminLogin()}
+                className="w-full py-3 px-4 bg-white hover:bg-slate-100 disabled:opacity-60 text-slate-900 font-bold text-xs sm:text-sm rounded-xl shadow-md transition-colors flex items-center justify-center gap-2.5 min-h-[44px]"
+              >
+                <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    fill="#4285F4"
+                    d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17Z"
+                  />
+                  <path
+                    fill="#34A853"
+                    d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.11-6.72-4.96H1.29v3.14C3.26 21.3 7.31 24 12 24Z"
+                  />
+                  <path
+                    fill="#FBBC05"
+                    d="M5.28 14.24c-.24-.72-.38-1.49-.38-2.24s.14-1.52.38-2.24V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.99-3.14Z"
+                  />
+                  <path
+                    fill="#EA4335"
+                    d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96Z"
+                  />
+                </svg>
+                <span>Sign In with Google (Live Cloud Database)</span>
+              </button>
+              <p className="text-[11px] text-slate-400 text-center">
+                Works from any PC or domain with real-time cross-device parcel sync.
+              </p>
+
+              <div className="relative flex items-center py-1">
+                <div className="flex-grow border-t border-slate-800" />
+                <span className="shrink-0 mx-3 text-[10px] uppercase tracking-wider text-slate-500 font-semibold">
+                  Or Express Server Credentials
+                </span>
+                <div className="flex-grow border-t border-slate-800" />
               </div>
             </div>
 
@@ -812,6 +1219,24 @@ export const AdminApp: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          {isCloudAdmin ? (
+            <div className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border bg-emerald-950/50 border-emerald-500/40 text-emerald-300 text-[11px] font-semibold">
+              <Cloud className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Cloud Database Live</span>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => void handleGoogleAdminLogin()}
+              disabled={isAuthBusy}
+              className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border bg-slate-900 hover:bg-slate-800 border-emerald-500/40 text-emerald-300 text-[11px] font-semibold transition-colors"
+              title="Link Google Cloud Admin for real-time cross-device verification & sync"
+            >
+              <Cloud className="w-3.5 h-3.5" />
+              <span>Link Google Cloud</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => setAutoSync((v) => !v)}
@@ -920,21 +1345,30 @@ export const AdminApp: React.FC = () => {
 
       {/* Main Content */}
       <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-8 py-6 space-y-6">
-        {isOfflineMode && (
+        {isOfflineMode && !isCloudAdmin && (
           <div className="rounded-xl px-4 py-3 text-xs flex flex-wrap items-center justify-between gap-3 border bg-amber-950/60 border-amber-500/50 text-amber-200">
             <div className="flex items-center gap-2">
               <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
               <span>
-                Unable to reach the live registry server right now — showing local browser cache only. New user land submissions from other devices will appear once reconnected.
+                Unable to reach the live server endpoint from this host. Connect Google Cloud Admin for real-time cross-device parcel sync.
               </span>
             </div>
-            <button
-              type="button"
-              onClick={() => void fetchOverview(false)}
-              className="px-3 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-100 font-semibold"
-            >
-              Retry Live Sync
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void handleGoogleAdminLogin()}
+                className="px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold"
+              >
+                Connect Google Cloud
+              </button>
+              <button
+                type="button"
+                onClick={() => void fetchOverview(false)}
+                className="px-3 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-100 font-semibold"
+              >
+                Retry Live Sync
+              </button>
+            </div>
           </div>
         )}
 
@@ -1555,6 +1989,40 @@ export const AdminApp: React.FC = () => {
                   Authorized administrators for this portal.
                 </p>
               </div>
+              {isCloudAdmin && (
+                <form
+                  onSubmit={handleAuthorizeGoogleAdmin}
+                  className="p-4 border-b border-slate-800 bg-slate-950/60 space-y-2.5"
+                >
+                  <div className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider">
+                    Authorize Google Admin Email
+                  </div>
+                  <input
+                    type="text"
+                    value={inviteAdminName}
+                    onChange={(e) => setInviteAdminName(e.target.value)}
+                    placeholder="Admin full name"
+                    className="w-full px-3 py-2 bg-slate-950 border border-slate-700 focus:border-emerald-500 rounded-lg text-xs text-white outline-none"
+                  />
+                  <div className="flex gap-2">
+                    <input
+                      type="email"
+                      required
+                      value={inviteAdminEmail}
+                      onChange={(e) => setInviteAdminEmail(e.target.value)}
+                      placeholder="colleague@gmail.com"
+                      className="flex-1 min-w-0 px-3 py-2 bg-slate-950 border border-slate-700 focus:border-emerald-500 rounded-lg text-xs text-white outline-none"
+                    />
+                    <button
+                      type="submit"
+                      disabled={isInvitingAdmin}
+                      className="px-3 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white text-xs font-bold rounded-lg whitespace-nowrap shrink-0"
+                    >
+                      {isInvitingAdmin ? 'Adding...' : 'Authorize'}
+                    </button>
+                  </div>
+                </form>
+              )}
               <div className="divide-y divide-slate-800">
                 {admins.map((adm) => (
                   <div key={adm.id} className="p-4 space-y-1 text-xs">

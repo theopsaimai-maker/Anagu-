@@ -1,0 +1,451 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Pillar 4 Global Safety Net: Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 3: Hardened Global Helpers
+    // -------------------------------------------------------------------------
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidEmailKey(id) {
+      return id is string && id.size() >= 3 && id.size() <= 180 && id.matches('^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$');
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'theophilussamuel100@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || (
+        isVerifiedUser() && (
+          exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+          (request.auth.token.email is string &&
+            exists(/databases/$(database)/documents/admins/$(request.auth.token.email)))
+        )
+      );
+    }
+
+    function hasRoleInUsers(allowedRole) {
+      return isVerifiedUser() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == allowedRole;
+    }
+
+    // -------------------------------------------------------------------------
+    // Entity Validation Blueprints (Phase 4)
+    // -------------------------------------------------------------------------
+    function isValidCoordinateList(coords) {
+      return coords is list &&
+        coords.size() <= 100 &&
+        (coords.size() == 0 || (
+          coords[0] is map &&
+          coords[0].keys().hasAll(['lat', 'lng']) &&
+          coords[0].keys().hasOnly(['lat', 'lng']) &&
+          coords[0].lat is number &&
+          coords[0].lng is number
+        ));
+    }
+
+    function isValidBeaconList(beacons) {
+      return beacons is list &&
+        beacons.size() <= 100 &&
+        (beacons.size() == 0 || (
+          beacons[0] is map &&
+          beacons[0].keys().hasAll(['id', 'name', 'lat', 'lng', 'easting', 'northing', 'elevation']) &&
+          beacons[0].keys().hasOnly(['id', 'name', 'lat', 'lng', 'easting', 'northing', 'elevation']) &&
+          beacons[0].id is string && beacons[0].id.size() <= 64 &&
+          beacons[0].name is string && beacons[0].name.size() <= 64 &&
+          beacons[0].lat is number &&
+          beacons[0].lng is number &&
+          beacons[0].easting is number &&
+          beacons[0].northing is number &&
+          beacons[0].elevation is number
+        ));
+    }
+
+    function isValidParcel(data) {
+      return data.keys().hasAll([
+          'id', 'cadastralRef', 'applicantName', 'state', 'lga',
+          'areaSqm', 'perimeterM', 'coordinates', 'beacons',
+          'spatialHash', 'documentHash', 'surveyPlanRef', 'intendedUse',
+          'status', 'visibility', 'ownerUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'cadastralRef', 'applicantName', 'applicantNinMasked', 'state', 'lga', 'district',
+          'areaSqm', 'perimeterM', 'coordinates', 'beacons',
+          'spatialHash', 'documentHash', 'surveyPlanRef', 'intendedUse',
+          'priceUsd', 'sellerWallet', 'mapSnapshotUrl',
+          'status', 'visibility', 'ownerUid',
+          'tokenId', 'txHash', 'blockNumber', 'issuanceTimestamp', 'revocationData',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.id is string && data.id.size() >= 3 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.cadastralRef is string && data.cadastralRef.size() >= 3 && data.cadastralRef.size() <= 100 &&
+        data.applicantName is string && data.applicantName.size() >= 2 && data.applicantName.size() <= 160 &&
+        (!('applicantNinMasked' in data) || (data.applicantNinMasked is string && data.applicantNinMasked.size() <= 100)) &&
+        data.state is string && data.state.size() >= 2 && data.state.size() <= 100 &&
+        data.lga is string && data.lga.size() >= 2 && data.lga.size() <= 100 &&
+        (!('district' in data) || (data.district is string && data.district.size() <= 200)) &&
+        data.areaSqm is number && data.areaSqm > 0 && data.areaSqm <= 100000000 &&
+        data.perimeterM is number && data.perimeterM > 0 && data.perimeterM <= 1000000 &&
+        isValidCoordinateList(data.coordinates) &&
+        isValidBeaconList(data.beacons) &&
+        data.spatialHash is string && data.spatialHash.size() <= 128 &&
+        data.documentHash is string && data.documentHash.size() <= 128 &&
+        data.surveyPlanRef is string && data.surveyPlanRef.size() <= 120 &&
+        data.intendedUse in ['Residential', 'Commercial', 'Agricultural', 'Industrial', 'Public Utility'] &&
+        (!('priceUsd' in data) || (data.priceUsd is number && data.priceUsd > 0 && data.priceUsd <= 1000000000)) &&
+        (!('sellerWallet' in data) || (data.sellerWallet is string && data.sellerWallet.size() == 42 && data.sellerWallet.matches('^0x[0-9a-fA-F]{40}$'))) &&
+        (!('mapSnapshotUrl' in data) || (data.mapSnapshotUrl is string && data.mapSnapshotUrl.size() <= 350000)) &&
+        data.status in ['draft', 'spatial_verified', 'oracle_verified', 'legal_approved', 'registered', 'revoked', 'rejected'] &&
+        data.visibility == 'public' &&
+        data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128 &&
+        (!('tokenId' in data) || (data.tokenId is number && data.tokenId >= 0)) &&
+        (!('txHash' in data) || (data.txHash is string && data.txHash.size() <= 128)) &&
+        (!('blockNumber' in data) || (data.blockNumber is number && data.blockNumber >= 0)) &&
+        (!('issuanceTimestamp' in data) || (data.issuanceTimestamp is string && data.issuanceTimestamp.size() <= 80)) &&
+        (!('revocationData' in data) || (
+          data.revocationData is map &&
+          data.revocationData.keys().hasAll(['ground', 'revokedBy', 'timestamp', 'gazetteNumber', 'reason', 'revocationTxHash']) &&
+          data.revocationData.keys().hasOnly(['ground', 'revokedBy', 'timestamp', 'gazetteNumber', 'reason', 'revocationTxHash']) &&
+          data.revocationData.ground in ['OverridingPublicInterest', 'BreachOfStatutoryCondition'] &&
+          data.revocationData.revokedBy is string && data.revocationData.revokedBy.size() <= 160 &&
+          data.revocationData.timestamp is string && data.revocationData.timestamp.size() <= 80 &&
+          data.revocationData.gazetteNumber is string && data.revocationData.gazetteNumber.size() <= 200 &&
+          data.revocationData.reason is string && data.revocationData.reason.size() <= 2000 &&
+          data.revocationData.revocationTxHash is string && data.revocationData.revocationTxHash.size() <= 128
+        )) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidParcelIdentity(data) {
+      return data.keys().hasAll(['parcelId', 'applicantNin', 'ownerUid', 'createdAt']) &&
+        data.keys().hasOnly(['parcelId', 'applicantNin', 'ownerUid', 'createdAt']) &&
+        isValidId(data.parcelId) &&
+        data.applicantNin is string && data.applicantNin.size() >= 2 && data.applicantNin.size() <= 100 &&
+        data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidRegistryUser(data) {
+      return data.keys().hasAll(['id', 'fullName', 'role', 'state', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'fullName', 'role', 'state', 'credentialMask', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 160 &&
+        data.role in ['citizen', 'surveyor', 'oracle'] &&
+        data.state is string && data.state.size() >= 2 && data.state.size() <= 100 &&
+        (!('credentialMask' in data) || (data.credentialMask is string && data.credentialMask.size() <= 120)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidRegistryUserPrivate(data) {
+      return data.keys().hasAll(['email', 'phone', 'credentialId', 'ownerUid', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['email', 'phone', 'credentialId', 'ownerUid', 'createdAt', 'updatedAt']) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 180 &&
+        data.phone is string && data.phone.size() >= 3 && data.phone.size() <= 40 &&
+        data.credentialId is string && data.credentialId.size() >= 2 && data.credentialId.size() <= 120 &&
+        data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAdminProfile(data) {
+      return data.keys().hasAll(['id', 'fullName', 'email', 'department', 'state', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'fullName', 'email', 'phone', 'department', 'state', 'createdAt']) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 180 &&
+        data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 160 &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 180 &&
+        (!('phone' in data) || (data.phone is string && data.phone.size() <= 40)) &&
+        data.department is string && data.department.size() >= 2 && data.department.size() <= 160 &&
+        data.state is string && data.state.size() >= 2 && data.state.size() <= 100 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidInquiry(data) {
+      return data.keys().hasAll(['id', 'buyerUid', 'name', 'phone', 'state', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'buyerUid', 'name', 'phone', 'email', 'state', 'message', 'createdAt']) &&
+        isValidId(data.id) &&
+        data.buyerUid is string && data.buyerUid.size() >= 1 && data.buyerUid.size() <= 128 &&
+        data.name is string && data.name.size() >= 2 && data.name.size() <= 160 &&
+        data.phone is string && data.phone.size() >= 4 && data.phone.size() <= 40 &&
+        (!('email' in data) || (data.email is string && data.email.size() <= 180)) &&
+        data.state is string && data.state.size() >= 2 && data.state.size() <= 100 &&
+        (!('message' in data) || (data.message is string && data.message.size() <= 4000)) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidMqttEvent(data) {
+      return data.keys().hasAll(['id', 'topic', 'payload', 'qos', 'timestamp', 'deliveryLatencyMs', 'status', 'visibility', 'ownerUid', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'topic', 'payload', 'qos', 'timestamp', 'deliveryLatencyMs', 'status', 'visibility', 'ownerUid', 'createdAt']) &&
+        isValidId(data.id) &&
+        data.topic in [
+          'land/registration/status',
+          'land/title/issued',
+          'land/title/revoked',
+          'land/verification/oracle',
+          'land/notification/titleholder'
+        ] &&
+        data.payload is map && data.payload.size() <= 20 &&
+        (data.qos == 1 || data.qos == 2) &&
+        data.timestamp is string && data.timestamp.size() >= 1 && data.timestamp.size() <= 40 &&
+        data.deliveryLatencyMs is number && data.deliveryLatencyMs >= 0 && data.deliveryLatencyMs <= 60000 &&
+        data.status in ['delivered', 'buffered_offline', 'retransmitted'] &&
+        data.visibility == 'public' &&
+        data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128 &&
+        data.createdAt is timestamp;
+    }
+
+    // -------------------------------------------------------------------------
+    // Collection Match Blocks
+    // -------------------------------------------------------------------------
+
+    // Health connection test document
+    match /test/{docId} {
+      allow get: if docId == 'connection';
+    }
+
+    // Public Registry Parcels (no raw PII)
+    match /parcels/{parcelId} {
+      allow get: if isValidId(parcelId) && (
+        existing().visibility == 'public' ||
+        isOwner(existing().ownerUid) ||
+        isAdmin()
+      );
+      allow list: if existing().visibility == 'public' ||
+        isBootstrappedAdmin() ||
+        (isSignedIn() && existing().ownerUid == request.auth.uid);
+
+      allow create: if isVerifiedUser() &&
+        isValidId(parcelId) &&
+        isValidParcel(incoming()) &&
+        incoming().id == parcelId &&
+        incoming().ownerUid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        (
+          isAdmin() || (
+            incoming().status == 'draft' &&
+            !('tokenId' in incoming()) &&
+            !('txHash' in incoming()) &&
+            !('blockNumber' in incoming()) &&
+            !('issuanceTimestamp' in incoming()) &&
+            !('revocationData' in incoming())
+          )
+        );
+
+      allow update: if isVerifiedUser() &&
+        isValidId(parcelId) &&
+        isValidParcel(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().cadastralRef == existing().cadastralRef &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isAdmin() || (
+            existing().status != 'revoked' &&
+            existing().status != 'registered' &&
+            existing().status != 'rejected' &&
+            (
+              (
+                hasRoleInUsers('surveyor') &&
+                incoming().status == 'spatial_verified' &&
+                incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+              ) ||
+              (
+                hasRoleInUsers('oracle') &&
+                incoming().status == 'oracle_verified' &&
+                incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+              )
+            )
+          )
+        );
+
+      allow delete: if isAdmin() && isValidId(parcelId);
+    }
+
+    // Isolated Applicant NIN Identity Documents
+    match /parcel_identities/{parcelId} {
+      allow get: if isValidId(parcelId) && (
+        isAdmin() ||
+        (isSignedIn() && existing().ownerUid == request.auth.uid)
+      );
+      allow list: if isBootstrappedAdmin() ||
+        (isSignedIn() && existing().ownerUid == request.auth.uid);
+
+      allow create: if isVerifiedUser() &&
+        isValidId(parcelId) &&
+        isValidParcelIdentity(incoming()) &&
+        incoming().parcelId == parcelId &&
+        incoming().ownerUid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        existsAfter(/databases/$(database)/documents/parcels/$(parcelId));
+
+      allow update: if false;
+      allow delete: if isAdmin() && isValidId(parcelId);
+    }
+
+    // Operational Users Directory (non-PII)
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isBootstrappedAdmin() || (isSignedIn() && existing().id == request.auth.uid);
+
+      allow create: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isOwner(userId) &&
+        isValidRegistryUser(incoming()) &&
+        incoming().id == userId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isValidRegistryUser(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          (
+            isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['role', 'state', 'fullName', 'credentialMask', 'updatedAt'])
+          ) ||
+          (
+            isOwner(userId) &&
+            incoming().role == existing().role &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'state', 'credentialMask', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isAdmin() && isValidId(userId);
+
+      // Private PII subcollection
+      match /private/{docId} {
+        allow get: if isValidId(userId) && docId == 'profile' && (isOwner(userId) || isAdmin());
+        allow list: if isBootstrappedAdmin() || isOwner(userId);
+
+        allow create: if isVerifiedUser() &&
+          isValidId(userId) &&
+          docId == 'profile' &&
+          isOwner(userId) &&
+          isValidRegistryUserPrivate(incoming()) &&
+          incoming().ownerUid == userId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          existsAfter(/databases/$(database)/documents/users/$(userId));
+
+        allow update: if isVerifiedUser() &&
+          isValidId(userId) &&
+          docId == 'profile' &&
+          isOwner(userId) &&
+          isValidRegistryUserPrivate(incoming()) &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['email', 'phone', 'credentialId', 'updatedAt']) &&
+          exists(/databases/$(database)/documents/users/$(userId));
+
+        allow delete: if isAdmin() && isValidId(userId);
+      }
+    }
+
+    // Administrator Directory
+    match /admins/{adminKey} {
+      allow get: if (isValidId(adminKey) || isValidEmailKey(adminKey)) && (
+        isAdmin() ||
+        (isVerifiedUser() && (adminKey == request.auth.uid || adminKey == request.auth.token.email))
+      );
+      allow list: if isBootstrappedAdmin() ||
+        (isVerifiedUser() && existing().email == request.auth.token.email);
+
+      allow create: if isAdmin() &&
+        (isValidId(adminKey) || isValidEmailKey(adminKey)) &&
+        isValidAdminProfile(incoming()) &&
+        incoming().createdAt == request.time;
+
+      allow update: if isAdmin() &&
+        (isValidId(adminKey) || isValidEmailKey(adminKey)) &&
+        isValidAdminProfile(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'phone', 'department', 'state']);
+
+      allow delete: if isAdmin() && (isValidId(adminKey) || isValidEmailKey(adminKey));
+    }
+
+    // Buyer Purchase Inquiries & Reservations
+    match /inquiries/{inquiryId} {
+      allow get: if isValidId(inquiryId) && (
+        isAdmin() ||
+        (isSignedIn() && existing().buyerUid == request.auth.uid)
+      );
+      allow list: if isBootstrappedAdmin() ||
+        (isSignedIn() && existing().buyerUid == request.auth.uid);
+
+      allow create: if isVerifiedUser() &&
+        isValidId(inquiryId) &&
+        isValidInquiry(incoming()) &&
+        incoming().id == inquiryId &&
+        incoming().buyerUid == request.auth.uid &&
+        incoming().createdAt == request.time;
+
+      allow update: if false;
+      allow delete: if isAdmin() && isValidId(inquiryId);
+    }
+
+    // Telemetry Audit Feed
+    match /mqtt_events/{eventId} {
+      allow get: if isValidId(eventId) && (
+        existing().visibility == 'public' ||
+        isSignedIn() ||
+        isAdmin()
+      );
+      allow list: if existing().visibility == 'public' ||
+        isBootstrappedAdmin() ||
+        (isSignedIn() && existing().ownerUid == request.auth.uid);
+
+      allow create: if isVerifiedUser() &&
+        isValidId(eventId) &&
+        isValidMqttEvent(incoming()) &&
+        incoming().id == eventId &&
+        incoming().ownerUid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        (
+          isAdmin() ||
+          !(incoming().topic in ['land/title/issued', 'land/title/revoked'])
+        );
+
+      allow update: if false;
+      allow delete: if isAdmin() && isValidId(eventId);
+    }
+  }
+}

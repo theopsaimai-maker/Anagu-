@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { onAuthStateChanged } from 'firebase/auth';
 import { 
   INITIAL_PARCELS, 
   INITIAL_MQTT_MESSAGES, 
@@ -50,9 +51,22 @@ import {
   checkBackendAvailable,
   clearUserSessionToken
 } from './lib/api';
+import { auth } from './lib/firebase';
+import {
+  mergeParcelLists,
+  saveMqttEventToFirestore,
+  saveParcelToFirestore,
+  saveUserProfileToFirestore,
+  signInWithGooglePopup,
+  signOutFirebaseUser,
+  subscribeFirestoreMqttEvents,
+  subscribeFirestoreParcels,
+  updateParcelStageInFirestore
+} from './lib/firestoreRegistry';
 
 const STORAGE_KEY = 'anagu_parcels_v1';
 const UNSYNCED_PARCELS_KEY = 'anagu_unsynced_parcels_v1';
+const UNSYNCED_CLOUD_PARCELS_KEY = 'anagu_unsynced_cloud_parcels_v1';
 const USERS_STORAGE_KEY = 'anagu_users_v1';
 const SYNCED_EMAILS_KEY = 'anagu_synced_user_emails_v1';
 const SESSION_STORAGE_KEY = 'anagu_session_v1';
@@ -90,6 +104,14 @@ function writeUnsyncedParcelIds(ids: string[]): void {
   writeStringList(UNSYNCED_PARCELS_KEY, ids);
 }
 
+function readUnsyncedCloudParcelIds(): string[] {
+  return readStringList(UNSYNCED_CLOUD_PARCELS_KEY);
+}
+
+function writeUnsyncedCloudParcelIds(ids: string[]): void {
+  writeStringList(UNSYNCED_CLOUD_PARCELS_KEY, ids);
+}
+
 export default function App() {
   const [parcels, setParcels] = useState<ParcelRecord[]>(() => {
     try {
@@ -103,6 +125,43 @@ export default function App() {
     }
     return INITIAL_PARCELS;
   });
+
+  const [isCloudConnected, setIsCloudConnected] = useState<boolean>(() =>
+    Boolean(auth.currentUser && auth.currentUser.emailVerified)
+  );
+  const cloudParcelsRef = useRef<ParcelRecord[]>([]);
+  const expressParcelsRef = useRef<ParcelRecord[]>([]);
+  const parcelsRef = useRef<ParcelRecord[]>(parcels);
+
+  useEffect(() => {
+    parcelsRef.current = parcels;
+  }, [parcels]);
+
+  const applyMergedParcels = useCallback(() => {
+    const cloudList = cloudParcelsRef.current;
+    const expressList = expressParcelsRef.current;
+    const cloudIds = new Set(cloudList.map((p) => p.id));
+    const pendingSet = new Set([...readUnsyncedParcelIds(), ...readUnsyncedCloudParcelIds()]);
+
+    const remainingCloudIds = readUnsyncedCloudParcelIds().filter((id) => !cloudIds.has(id));
+    writeUnsyncedCloudParcelIds(remainingCloudIds);
+
+    const localPendingOnly = parcelsRef.current.filter(
+      (p) => !cloudIds.has(p.id) && pendingSet.has(p.id)
+    );
+    const merged = mergeParcelLists(
+      cloudList,
+      expressList,
+      localPendingOnly,
+      INITIAL_PARCELS
+    );
+    setParcels(merged);
+    setActiveParcelId((prevActive) =>
+      prevActive && merged.some((p) => p.id === prevActive)
+        ? prevActive
+        : merged[1]?.id || merged[0]?.id || ''
+    );
+  }, []);
 
   useEffect(() => {
     try {
@@ -264,30 +323,91 @@ export default function App() {
       }
 
       if (Array.isArray(remoteParcels)) {
-        const remainingUnsynced = new Set(readUnsyncedParcelIds());
-        setParcels((prev) => {
-          const localPendingOnly = prev.filter(
-            (p) => !remoteIdSet.has(p.id) && remainingUnsynced.has(p.id)
-          );
-          const merged = [...localPendingOnly, ...remoteParcels];
-          setActiveParcelId((prevActive) =>
-            prevActive && merged.some((p) => p.id === prevActive)
-              ? prevActive
-              : merged[1]?.id || merged[0]?.id || ''
-          );
-          return merged;
-        });
+        expressParcelsRef.current = remoteParcels;
+        applyMergedParcels();
       }
       if (Array.isArray(remoteMqtt) && remoteMqtt.length > 0) {
-        setMqttMessages(remoteMqtt);
+        setMqttMessages((prev) => {
+          const seen = new Set(prev.map((m) => m.id));
+          const merged = [...prev];
+          for (const item of remoteMqtt) {
+            if (!seen.has(item.id)) {
+              merged.push(item);
+              seen.add(item.id);
+            }
+          }
+          return merged.sort((a, b) => b.id.localeCompare(a.id));
+        });
       }
     } catch {
-      // Keep local cache if backend API is temporarily unavailable
+      // Keep local cache + Cloud Firestore if backend Express API is temporarily unavailable
     }
-  }, [currentUser?.id]);
+  }, [currentUser?.id, applyMergedParcels]);
 
-  // Hydrate registry parcels & MQTT log from database (or cross-tab storage) on mount, focus, visibility & interval
-  // so Admin verification/rejection/revocation updates & cross-device submissions reflect live
+  const flushPendingCloudParcels = useCallback(async () => {
+    if (!auth.currentUser?.emailVerified) return;
+    const pendingCloudIds = readUnsyncedCloudParcelIds();
+    if (pendingCloudIds.length === 0) return;
+
+    const currentList = parcelsRef.current;
+    const remaining: string[] = [];
+    for (const id of pendingCloudIds) {
+      const candidate = currentList.find((p) => p.id === id);
+      if (!candidate) continue;
+      try {
+        await saveParcelToFirestore(candidate);
+      } catch {
+        remaining.push(id);
+      }
+    }
+    writeUnsyncedCloudParcelIds(remaining);
+  }, []);
+
+  // Listen to Firebase Auth state & subscribe to real-time Cloud Firestore parcels + MQTT feed
+  useEffect(() => {
+    const unsubAuth = onAuthStateChanged(auth, (fbUser) => {
+      const verified = Boolean(fbUser && fbUser.emailVerified);
+      setIsCloudConnected(verified);
+      if (verified) {
+        void flushPendingCloudParcels();
+      }
+    });
+
+    const unsubParcels = subscribeFirestoreParcels(
+      (cloudList) => {
+        cloudParcelsRef.current = cloudList;
+        applyMergedParcels();
+      },
+      () => {
+        // Non-blocking fallback to Express / local cache
+      }
+    );
+
+    const unsubMqtt = subscribeFirestoreMqttEvents(
+      (cloudEvents) => {
+        if (cloudEvents.length === 0) return;
+        setMqttMessages((prev) => {
+          const map = new Map<string, MqttMessage>();
+          for (const item of cloudEvents) map.set(item.id, item);
+          for (const item of prev) {
+            if (!map.has(item.id)) map.set(item.id, item);
+          }
+          return Array.from(map.values()).sort((a, b) => b.id.localeCompare(a.id));
+        });
+      },
+      () => {
+        // Non-blocking fallback
+      }
+    );
+
+    return () => {
+      unsubAuth();
+      unsubParcels();
+      unsubMqtt();
+    };
+  }, [applyMergedParcels, flushPendingCloudParcels]);
+
+  // Hydrate registry parcels & MQTT log from Express database (or cross-tab storage) on mount, focus, visibility & interval
   useEffect(() => {
     const handleStorageChange = (e: StorageEvent) => {
       if (e.key === STORAGE_KEY && e.newValue) {
@@ -303,6 +423,7 @@ export default function App() {
     const handleVisibilityOrFocus = () => {
       if (document.visibilityState === 'visible') {
         void syncFromBackend(true);
+        void flushPendingCloudParcels();
       }
     };
 
@@ -317,7 +438,7 @@ export default function App() {
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
       window.removeEventListener('storage', handleStorageChange);
     };
-  }, [syncFromBackend]);
+  }, [syncFromBackend, flushPendingCloudParcels]);
 
   useEffect(() => {
     if (viewMode === 'lands' || viewMode === 'portal') {
@@ -361,9 +482,26 @@ export default function App() {
 
   const handleSignOut = useCallback(() => {
     clearUserSessionToken();
+    void signOutFirebaseUser();
     setCurrentUser(null);
     setViewMode('landing');
   }, []);
+
+  const handleConnectGoogleSync = useCallback(async () => {
+    const fbUser = await signInWithGooglePopup();
+    const role = currentUser?.role || authRole || 'citizen';
+    const syncedUser = await saveUserProfileToFirestore(fbUser, role, {
+      fullName: currentUser?.fullName,
+      phone: currentUser?.phone,
+      state: currentUser?.state,
+      credentialId: currentUser?.credentialId
+    });
+    if (!currentUser || currentUser.id.startsWith('usr-')) {
+      setCurrentUser(syncedUser);
+    }
+    setIsCloudConnected(true);
+    await flushPendingCloudParcels();
+  }, [currentUser, authRole, flushPendingCloudParcels]);
 
   // Active frame object
   const activeFrame = FIGMA_FRAMES.find(f => f.id === selectedFrameId) || FIGMA_FRAMES[0];
@@ -419,22 +557,38 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [showTour, showShortcuts, viewMode, selectedFrameId, handleFocusFrame]);
 
-  // Pipeline state handlers (optimistic state + awaited backend persistence with retry)
+  // Pipeline state handlers (optimistic state + awaited Cloud Firestore & Express persistence)
   const handleNewParcelSubmit = async (newParcel: ParcelRecord): Promise<ParcelRecord> => {
     setParcels(prev => [newParcel, ...prev.filter(p => p.id !== newParcel.id)]);
     writeUnsyncedParcelIds([...readUnsyncedParcelIds(), newParcel.id]);
+    writeUnsyncedCloudParcelIds([...readUnsyncedCloudParcelIds(), newParcel.id]);
 
     let finalParcel = newParcel;
+
+    // 1. Write to Cloud Firestore immediately when signed in with Google
+    if (auth.currentUser?.emailVerified) {
+      try {
+        const cloudSaved = await saveParcelToFirestore(newParcel);
+        finalParcel = cloudSaved;
+        writeUnsyncedCloudParcelIds(
+          readUnsyncedCloudParcelIds().filter((id) => id !== newParcel.id && id !== cloudSaved.id)
+        );
+      } catch {
+        // Keep in unsynced cloud queue for retry
+      }
+    }
+
+    // 2. Also persist to Express backend API when available
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const saved = await apiCreateParcel(newParcel, currentUser?.id);
+        const saved = await apiCreateParcel(finalParcel, currentUser?.id);
         finalParcel = saved;
         writeUnsyncedParcelIds(readUnsyncedParcelIds().filter((id) => id !== newParcel.id && id !== saved.id));
         setParcels(prev => prev.map(p => (p.id === saved.id || p.id === newParcel.id ? saved : p)));
         break;
       } catch {
         if (attempt === 0) {
-          await new Promise((r) => window.setTimeout(r, 500));
+          await new Promise((r) => window.setTimeout(r, 400));
         }
       }
     }
@@ -451,6 +605,7 @@ export default function App() {
 
   const handleApproveSpatial = (parcelId: string) => {
     setParcels(prev => prev.map(p => p.id === parcelId ? { ...p, status: 'spatial_verified' } : p));
+    void updateParcelStageInFirestore(parcelId, 'spatial_verified');
     apiApproveSpatial(parcelId).catch(() => {
       // Keep local state if offline
     });
@@ -458,6 +613,7 @@ export default function App() {
 
   const handleApproveOracle = (parcelId: string, details?: Record<string, any>) => {
     setParcels(prev => prev.map(p => p.id === parcelId ? { ...p, status: 'oracle_verified' } : p));
+    void updateParcelStageInFirestore(parcelId, 'oracle_verified');
     apiApproveOracle(parcelId, details).catch(() => {
       // Keep local state if offline
     });
@@ -512,6 +668,7 @@ export default function App() {
       status: 'delivered'
     };
     setMqttMessages(prev => [newMsg, ...prev]);
+    void saveMqttEventToFirestore(newMsg);
     apiCreateMqttMessage(newMsg).catch(() => {
       // Keep local state if offline
     });
@@ -668,6 +825,8 @@ export default function App() {
             <ScreenCitizenPortal
               parcels={parcels}
               currentUser={currentUser}
+              isCloudConnected={isCloudConnected}
+              onConnectGoogleSync={handleConnectGoogleSync}
               onNewParcelSubmit={handleNewParcelSubmit}
               onSelectParcel={(p) => {
                 setActiveParcelId(p.id);

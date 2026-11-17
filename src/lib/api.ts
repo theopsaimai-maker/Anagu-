@@ -5,8 +5,9 @@ import type {
   ParcelRecord,
   RevocationGround
 } from '../types/anagu';
+import { buildApiUrl, getCandidateApiBases, setResolvedApiBase } from './apiBase';
+import { saveInquiryToFirestore } from './firestoreRegistry';
 
-const API_BASE = ((import.meta as { env?: Record<string, string | undefined> }).env?.VITE_API_BASE_URL || '').replace(/\/+$/, '');
 const USER_TOKEN_KEY = 'anagu_user_token_v1';
 
 export function clearUserSessionToken(): void {
@@ -71,93 +72,112 @@ export function isBackendUnavailableError(err: unknown): boolean {
 export async function checkBackendAvailable(force = false): Promise<boolean> {
   if (!force && Date.now() < backendUnavailableUntil) return false;
 
-  try {
-    const response = await fetch(`${API_BASE}/api/health`, {
-      method: 'GET',
-      cache: 'no-store',
-      signal: typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(5000) : undefined
-    });
-    const contentType = response.headers.get('content-type') || '';
-    if (!response.ok || !contentType.includes('application/json')) {
-      backendUnavailableUntil = Date.now() + 4000;
-      return false;
+  for (const base of getCandidateApiBases()) {
+    try {
+      const response = await fetch(buildApiUrl('/api/health', base), {
+        method: 'GET',
+        cache: 'no-store',
+        signal: typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(4500) : undefined
+      });
+      const contentType = response.headers.get('content-type') || '';
+      if (!response.ok || !contentType.includes('application/json')) {
+        continue;
+      }
+      const data = await response.json().catch(() => null);
+      if (data && typeof data === 'object' && 'ok' in data) {
+        setResolvedApiBase(base);
+        backendUnavailableUntil = 0;
+        return true;
+      }
+    } catch {
+      // Try next candidate base
     }
-    const data = await response.json().catch(() => null);
-    if (data && typeof data === 'object' && 'ok' in data) {
-      backendUnavailableUntil = 0;
-      return true;
-    }
-    backendUnavailableUntil = Date.now() + 4000;
-    return false;
-  } catch {
-    backendUnavailableUntil = Date.now() + 2500;
-    return false;
   }
+
+  backendUnavailableUntil = Date.now() + 3000;
+  return false;
 }
 
 async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
   const token = getActiveBearerToken();
-  let response: Response | null = null;
-  let lastFetchError: unknown;
+  const bases = getCandidateApiBases();
+  let lastError: unknown;
 
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const res = await fetch(`${API_BASE}${url}`, {
-        cache: 'no-store',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          ...(options?.headers || {})
-        },
-        ...options
-      });
-      if (attempt === 0 && (res.status === 502 || res.status === 503 || res.status === 504)) {
-        await new Promise((r) => setTimeout(r, 350));
+  for (const base of bases) {
+    let response: Response | null = null;
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await fetch(buildApiUrl(url, base), {
+          cache: 'no-store',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            ...(options?.headers || {})
+          },
+          ...options
+        });
+        if (attempt === 0 && (res.status === 502 || res.status === 503 || res.status === 504)) {
+          await new Promise((r) => setTimeout(r, 350));
+          continue;
+        }
+        response = res;
+        break;
+      } catch (err) {
+        lastError = err;
+        if (attempt === 0) {
+          await new Promise((r) => setTimeout(r, 300));
+        }
+      }
+    }
+
+    if (!response) {
+      continue;
+    }
+
+    const contentType = response.headers.get('content-type') || '';
+    const isJson = contentType.includes('application/json');
+    const data = isJson ? await response.json().catch(() => ({})) : {};
+
+    if (!response.ok) {
+      const serverErrorMsg = (data as { error?: string })?.error;
+      const isParcelNotFound = response.status === 404 && serverErrorMsg === 'Parcel not found.';
+      const unavailable =
+        !isParcelNotFound &&
+        (response.status === 404 ||
+          response.status === 405 ||
+          response.status === 502 ||
+          response.status === 503 ||
+          response.status === 504 ||
+          !isJson);
+
+      if (unavailable) {
+        lastError = new ApiError(
+          serverErrorMsg || `Request failed (${response.status})`,
+          response.status,
+          true
+        );
         continue;
       }
-      response = res;
-      break;
-    } catch (err) {
-      lastFetchError = err;
-      if (attempt === 0) {
-        await new Promise((r) => setTimeout(r, 350));
-      }
+
+      setResolvedApiBase(base);
+      throw new ApiError(
+        serverErrorMsg || `Request failed (${response.status})`,
+        response.status,
+        false
+      );
     }
+
+    setResolvedApiBase(base);
+    backendUnavailableUntil = 0;
+    return data as T;
   }
 
-  if (!response) {
-    void lastFetchError;
-    backendUnavailableUntil = Date.now() + 2500;
-    throw new ApiError('Unable to reach backend service.', 0, true);
+  backendUnavailableUntil = Date.now() + 2500;
+  if (lastError instanceof ApiError) {
+    throw lastError;
   }
-
-  const contentType = response.headers.get('content-type') || '';
-  const isJson = contentType.includes('application/json');
-  const data = isJson ? await response.json().catch(() => ({})) : {};
-
-  if (!response.ok) {
-    const serverErrorMsg = (data as { error?: string })?.error;
-    const isParcelNotFound = response.status === 404 && serverErrorMsg === 'Parcel not found.';
-    const unavailable =
-      !isParcelNotFound &&
-      (response.status === 404 ||
-        response.status === 405 ||
-        response.status === 502 ||
-        response.status === 503 ||
-        response.status === 504 ||
-        !isJson);
-    if (unavailable) {
-      backendUnavailableUntil = Date.now() + (response.status >= 500 ? 1500 : 4000);
-    }
-    throw new ApiError(
-      serverErrorMsg || `Request failed (${response.status})`,
-      response.status,
-      unavailable
-    );
-  }
-
-  backendUnavailableUntil = 0;
-  return data as T;
+  throw new ApiError('Unable to reach backend service.', 0, true);
 }
 
 export async function apiLogin(email: string, password: string): Promise<AuthUser> {
@@ -281,6 +301,13 @@ export async function apiCreateInquiry(payload: {
   state: string;
   message?: string;
 }): Promise<void> {
+  let savedToCloud = false;
+  try {
+    savedToCloud = await saveInquiryToFirestore(payload);
+  } catch {
+    savedToCloud = false;
+  }
+
   try {
     await requestJson('/api/inquiries', {
       method: 'POST',
@@ -290,13 +317,15 @@ export async function apiCreateInquiry(payload: {
     if (!isBackendUnavailableError(err)) {
       throw err;
     }
-    try {
-      const existing = JSON.parse(localStorage.getItem('anagu_inquiries_v1') || '[]');
-      const next = Array.isArray(existing) ? existing : [];
-      next.unshift({ ...payload, id: `inq-${Date.now()}`, createdAt: new Date().toISOString() });
-      localStorage.setItem('anagu_inquiries_v1', JSON.stringify(next));
-    } catch {
-      // Ignore storage quota errors
+    if (!savedToCloud) {
+      try {
+        const existing = JSON.parse(localStorage.getItem('anagu_inquiries_v1') || '[]');
+        const next = Array.isArray(existing) ? existing : [];
+        next.unshift({ ...payload, id: `inq-${Date.now()}`, createdAt: new Date().toISOString() });
+        localStorage.setItem('anagu_inquiries_v1', JSON.stringify(next));
+      } catch {
+        // Ignore storage quota errors
+      }
     }
   }
 }

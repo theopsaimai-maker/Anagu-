@@ -1,6 +1,7 @@
 import { StrictMode, Suspense, lazy } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
+import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import './index.css';
 
 const LazyAdminApp = lazy(() =>
@@ -25,13 +26,15 @@ const showAdminSite = isAdminSiteRequest();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    {showAdminSite ? (
-      <Suspense fallback={<div className="min-h-screen bg-[#060911]" />}>
-        <LazyAdminApp />
-      </Suspense>
-    ) : (
-      <App />
-    )}
+    <ErrorBoundary>
+      {showAdminSite ? (
+        <Suspense fallback={<div className="min-h-screen bg-[#060911]" />}>
+          <LazyAdminApp />
+        </Suspense>
+      ) : (
+        <App />
+      )}
+    </ErrorBoundary>
   </StrictMode>
 );
 
