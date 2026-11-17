@@ -46,6 +46,7 @@ import {
   apiListParcels,
   apiMintTitle,
   apiRevokeTitle,
+  apiSignup,
   checkBackendAvailable,
   clearUserSessionToken
 } from './lib/api';
@@ -53,11 +54,13 @@ import {
 const STORAGE_KEY = 'anagu_parcels_v1';
 const UNSYNCED_PARCELS_KEY = 'anagu_unsynced_parcels_v1';
 const USERS_STORAGE_KEY = 'anagu_users_v1';
+const SYNCED_EMAILS_KEY = 'anagu_synced_user_emails_v1';
 const SESSION_STORAGE_KEY = 'anagu_session_v1';
+const DEMO_SEED_IDS = new Set(['usr-citizen-01', 'usr-surveyor-01', 'usr-oracle-01']);
 
-function readUnsyncedParcelIds(): string[] {
+function readStringList(key: string): string[] {
   try {
-    const raw = localStorage.getItem(UNSYNCED_PARCELS_KEY);
+    const raw = localStorage.getItem(key);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
@@ -66,17 +69,25 @@ function readUnsyncedParcelIds(): string[] {
   }
 }
 
-function writeUnsyncedParcelIds(ids: string[]): void {
+function writeStringList(key: string, items: string[]): void {
   try {
-    const unique = Array.from(new Set(ids));
+    const unique = Array.from(new Set(items));
     if (unique.length === 0) {
-      localStorage.removeItem(UNSYNCED_PARCELS_KEY);
+      localStorage.removeItem(key);
     } else {
-      localStorage.setItem(UNSYNCED_PARCELS_KEY, JSON.stringify(unique));
+      localStorage.setItem(key, JSON.stringify(unique));
     }
   } catch {
     // Ignore storage quota errors
   }
+}
+
+function readUnsyncedParcelIds(): string[] {
+  return readStringList(UNSYNCED_PARCELS_KEY);
+}
+
+function writeUnsyncedParcelIds(ids: string[]): void {
+  writeStringList(UNSYNCED_PARCELS_KEY, ids);
 }
 
 export default function App() {
@@ -213,6 +224,45 @@ export default function App() {
         writeUnsyncedParcelIds(stillUnsynced);
       }
 
+      // Replay any local custom accounts that have not yet been synced to the server
+      try {
+        const rawUsers = localStorage.getItem(USERS_STORAGE_KEY);
+        const savedUsers: StoredAuthAccount[] = rawUsers ? JSON.parse(rawUsers) : [];
+        if (Array.isArray(savedUsers) && savedUsers.length > 0) {
+          const syncedSet = new Set(readStringList(SYNCED_EMAILS_KEY).map((e) => e.toLowerCase()));
+          let changed = false;
+          for (const acc of savedUsers) {
+            if (!acc?.email || !acc?.password || DEMO_SEED_IDS.has(acc.id)) continue;
+            const normEmail = acc.email.trim().toLowerCase();
+            if (syncedSet.has(normEmail)) continue;
+            try {
+              await apiSignup({
+                fullName: acc.fullName,
+                email: normEmail,
+                phone: acc.phone,
+                role: acc.role,
+                state: acc.state,
+                credentialId: acc.credentialId,
+                password: acc.password
+              });
+              syncedSet.add(normEmail);
+              changed = true;
+            } catch (err) {
+              const msg = err instanceof Error ? err.message.toLowerCase() : '';
+              if (msg.includes('already exists')) {
+                syncedSet.add(normEmail);
+                changed = true;
+              }
+            }
+          }
+          if (changed) {
+            writeStringList(SYNCED_EMAILS_KEY, Array.from(syncedSet));
+          }
+        }
+      } catch {
+        // Ignore user replay errors
+      }
+
       if (Array.isArray(remoteParcels)) {
         const remainingUnsynced = new Set(readUnsyncedParcelIds());
         setParcels((prev) => {
@@ -295,8 +345,12 @@ export default function App() {
     setViewMode('auth');
   }, []);
 
-  const handleRegisterAccount = useCallback((newAccount: StoredAuthAccount) => {
-    setAccounts(prev => [newAccount, ...prev]);
+  const handleRegisterAccount = useCallback((newAccount: StoredAuthAccount, needsBackendSync = false) => {
+    const cleanEmail = newAccount.email.trim().toLowerCase();
+    setAccounts((prev) => [newAccount, ...prev.filter((a) => a.email.toLowerCase() !== cleanEmail)]);
+    if (!needsBackendSync) {
+      writeStringList(SYNCED_EMAILS_KEY, [...readStringList(SYNCED_EMAILS_KEY), cleanEmail]);
+    }
   }, []);
 
   const handleAuthSuccess = useCallback((user: AuthUser) => {

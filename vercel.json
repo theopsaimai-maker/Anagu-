@@ -1,6 +1,12 @@
 {
   "rewrites": [
+    {
+      "source": "/",
+      "has": [{ "type": "host", "value": "^(.*[.-])?admin\\..*$" }],
+      "destination": "/admin.html"
+    },
     { "source": "/admin", "destination": "/admin.html" },
     { "source": "/admin/:path*", "destination": "/admin.html" }
   ]
 }
+

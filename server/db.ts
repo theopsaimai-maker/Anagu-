@@ -1587,7 +1587,7 @@ export async function signupUser(input: SignupInput): Promise<{ user?: AuthUser;
   if (isSupabaseRestConfigured()) {
     try {
       const existing = await supabaseRest<Array<{ id: string }>>(
-        `anagu_users?select=id&email=ilike.${encodeURIComponent(normalizedEmail)}&limit=1`
+        `anagu_users?select=id&email=eq.${encodeURIComponent(normalizedEmail)}&limit=1`
       );
       if (existing.length > 0) {
         return { error: 'An account with this email already exists. Please sign in instead.' };
@@ -1662,10 +1662,15 @@ export async function loginUser(
 
   if (isSupabaseRestConfigured()) {
     try {
-      const rows = await supabaseRest<StoredUserRow[]>(
-        `anagu_users?select=*&email=ilike.${encodeURIComponent(normalizedEmail)}&limit=1`
+      let rows = await supabaseRest<StoredUserRow[]>(
+        `anagu_users?select=*&email=eq.${encodeURIComponent(normalizedEmail)}&limit=1`
       );
-      const found = rows[0];
+      if (rows.length === 0) {
+        rows = await supabaseRest<StoredUserRow[]>(
+          `anagu_users?select=*&email=ilike.${encodeURIComponent(normalizedEmail)}&limit=1`
+        );
+      }
+      const found = rows.find((u) => u.email.trim().toLowerCase() === normalizedEmail);
       if (!found) {
         return { error: 'No Anagu account was found for that email. Switch to Create Account to register.' };
       }
@@ -1863,10 +1868,15 @@ export async function loginAdmin(
 
   if (isSupabaseRestConfigured()) {
     try {
-      const rows = await supabaseRest<StoredAdminRow[]>(
-        `anagu_admins?select=*&email=ilike.${encodeURIComponent(normalizedEmail)}&limit=1`
+      let rows = await supabaseRest<StoredAdminRow[]>(
+        `anagu_admins?select=*&email=eq.${encodeURIComponent(normalizedEmail)}&limit=1`
       );
-      const found = rows[0];
+      if (rows.length === 0) {
+        rows = await supabaseRest<StoredAdminRow[]>(
+          `anagu_admins?select=*&email=ilike.${encodeURIComponent(normalizedEmail)}&limit=1`
+        );
+      }
+      const found = rows.find((a) => a.email.trim().toLowerCase() === normalizedEmail);
       if (!found) {
         return { error: 'No admin account was found for that email. Switch to Sign Up to register an admin.' };
       }

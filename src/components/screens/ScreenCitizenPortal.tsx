@@ -443,11 +443,12 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
       }
     }
 
-    const newId = `PAR-2026-${Math.floor(1000 + Math.random() * 9000)}`;
+    const uniqueSuffix = Date.now().toString(36).toUpperCase().slice(-4);
+    const newId = `PAR-2026-${Math.floor(1000 + Math.random() * 9000)}-${uniqueSuffix}`;
     const newParcel: ParcelRecord = {
       id: newId,
       cadastralRef: `${statePrefix}/${cleanLga.slice(0, 4).toUpperCase().replace(/[^A-Z]/g, 'X')}/2026-${Math.floor(
-        100 + Math.random() * 900
+        1000 + Math.random() * 9000
       )}`,
       applicantName: applicantName.trim(),
       applicantNin: applicantNin.trim(),

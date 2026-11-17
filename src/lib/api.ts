@@ -97,17 +97,36 @@ export async function checkBackendAvailable(force = false): Promise<boolean> {
 
 async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
   const token = getActiveBearerToken();
-  let response: Response;
-  try {
-    response = await fetch(`${API_BASE}${url}`, {
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...(options?.headers || {})
-      },
-      ...options
-    });
-  } catch {
+  let response: Response | null = null;
+  let lastFetchError: unknown;
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch(`${API_BASE}${url}`, {
+        cache: 'no-store',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(options?.headers || {})
+        },
+        ...options
+      });
+      if (attempt === 0 && (res.status === 502 || res.status === 503 || res.status === 504)) {
+        await new Promise((r) => setTimeout(r, 350));
+        continue;
+      }
+      response = res;
+      break;
+    } catch (err) {
+      lastFetchError = err;
+      if (attempt === 0) {
+        await new Promise((r) => setTimeout(r, 350));
+      }
+    }
+  }
+
+  if (!response) {
+    void lastFetchError;
     backendUnavailableUntil = Date.now() + 2500;
     throw new ApiError('Unable to reach backend service.', 0, true);
   }

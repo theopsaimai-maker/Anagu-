@@ -1,6 +1,8 @@
 import 'dotenv/config';
 import crypto from 'node:crypto';
 import dns from 'node:dns';
+import fs from 'node:fs';
+import path from 'node:path';
 import express from 'express';
 import type {
   AccessRoleId,
@@ -37,18 +39,99 @@ import {
 
 dns.setDefaultResultOrder('ipv4first');
 
-const globalSecretStore = globalThis as unknown as { _anaguRuntimeHmacSecret?: string };
+const globalSecretStore = globalThis as unknown as {
+  _anaguRuntimeHmacSecret?: string;
+  _anaguAuthRateMap?: Map<string, { count: number; resetAt: number }>;
+};
 
 function getSigningSecret(): string {
+  if (globalSecretStore._anaguRuntimeHmacSecret) {
+    return globalSecretStore._anaguRuntimeHmacSecret;
+  }
+
   const configured =
     process.env.ADMIN_TOKEN_SECRET?.trim() || process.env.SUPABASE_SECRET_KEY?.trim();
   if (configured) {
-    return crypto.createHash('sha256').update(`anagu:hmac:${configured}`).digest('hex');
+    globalSecretStore._anaguRuntimeHmacSecret = crypto
+      .createHash('sha256')
+      .update(`anagu:hmac:${configured}`)
+      .digest('hex');
+    return globalSecretStore._anaguRuntimeHmacSecret;
   }
-  if (!globalSecretStore._anaguRuntimeHmacSecret) {
-    globalSecretStore._anaguRuntimeHmacSecret = crypto.randomBytes(32).toString('hex');
+
+  // Persist a cryptographically random secret on disk in .anagu-data so server restarts do not invalidate tokens
+  const secretDirs = [path.join(process.cwd(), '.anagu-data'), '/tmp'];
+  for (const dir of secretDirs) {
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      const secretFile = path.join(dir, '.hmac-secret');
+      if (fs.existsSync(secretFile)) {
+        const existing = fs.readFileSync(secretFile, 'utf8').trim();
+        if (/^[a-f0-9]{64}$/i.test(existing)) {
+          globalSecretStore._anaguRuntimeHmacSecret = existing;
+          return existing;
+        }
+      }
+      const generated = crypto.randomBytes(32).toString('hex');
+      fs.writeFileSync(secretFile, generated, { encoding: 'utf8', mode: 0o600 });
+      globalSecretStore._anaguRuntimeHmacSecret = generated;
+      return generated;
+    } catch {
+      // Try next writable directory
+    }
   }
+
+  const dbFallback = process.env.DATABASE_URL?.trim();
+  if (dbFallback) {
+    globalSecretStore._anaguRuntimeHmacSecret = crypto
+      .createHash('sha256')
+      .update(`anagu:hmac:db:${dbFallback}`)
+      .digest('hex');
+    return globalSecretStore._anaguRuntimeHmacSecret;
+  }
+
+  globalSecretStore._anaguRuntimeHmacSecret = crypto.randomBytes(32).toString('hex');
   return globalSecretStore._anaguRuntimeHmacSecret;
+}
+
+const ETH_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
+const ALLOWED_MQTT_TOPICS: ReadonlySet<MqttMessage['topic']> = new Set([
+  'land/registration/status',
+  'land/verification/oracle',
+  'land/notification/titleholder',
+  'land/title/issued',
+  'land/title/revoked'
+]);
+const ADMIN_ONLY_MQTT_TOPICS: ReadonlySet<MqttMessage['topic']> = new Set([
+  'land/title/issued',
+  'land/title/revoked'
+]);
+
+function checkAuthRateLimit(req: express.Request, scope: string, maxAttempts = 30, windowMs = 5 * 60 * 1000): boolean {
+  if (!globalSecretStore._anaguAuthRateMap) {
+    globalSecretStore._anaguAuthRateMap = new Map();
+  }
+  const map = globalSecretStore._anaguAuthRateMap;
+  const now = Date.now();
+  if (map.size > 2000) {
+    for (const [k, v] of map.entries()) {
+      if (v.resetAt <= now) map.delete(k);
+    }
+  }
+  const ip =
+    (typeof req.headers['x-forwarded-for'] === 'string'
+      ? req.headers['x-forwarded-for'].split(',')[0].trim()
+      : '') ||
+    req.ip ||
+    'unknown';
+  const key = `${scope}:${ip}`;
+  const entry = map.get(key);
+  if (!entry || entry.resetAt <= now) {
+    map.set(key, { count: 1, resetAt: now + windowMs });
+    return true;
+  }
+  entry.count += 1;
+  return entry.count <= maxAttempts;
 }
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
@@ -177,7 +260,6 @@ export function attachApiRoutes(app: express.Express): void {
   // Security headers + CORS support for split-domain deployments
   app.use((_req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     next();
   });
@@ -190,6 +272,7 @@ export function attachApiRoutes(app: express.Express): void {
     }
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
     if (req.method === 'OPTIONS') {
       return res.status(204).end();
     }
@@ -241,6 +324,9 @@ export function attachApiRoutes(app: express.Express): void {
   // Authentication Routes
   app.post('/api/auth/login', async (req, res) => {
     try {
+      if (!checkAuthRateLimit(req, 'user-login')) {
+        return res.status(429).json({ error: 'Too many sign-in attempts. Please wait a few minutes and try again.' });
+      }
       const { email, password } = req.body ?? {};
       if (
         typeof email !== 'string' ||
@@ -367,6 +453,45 @@ export function attachApiRoutes(app: express.Express): void {
           ? rawParcel.priceUsd
           : undefined;
 
+      const rawWallet =
+        typeof rawParcel.sellerWallet === 'string'
+          ? rawParcel.sellerWallet.replace(/[\u200B-\u200D\uFEFF\u00A0\s]/g, '').trim()
+          : '';
+      if (rawWallet && !ETH_ADDRESS_PATTERN.test(rawWallet)) {
+        return res.status(400).json({ error: 'Invalid Seller Web3 wallet address format.' });
+      }
+
+      const validCoordinates: [number, number][] = Array.isArray(rawParcel.coordinates)
+        ? rawParcel.coordinates
+            .slice(0, 100)
+            .filter(
+              (c): c is [number, number] =>
+                Array.isArray(c) &&
+                c.length >= 2 &&
+                typeof c[0] === 'number' &&
+                typeof c[1] === 'number' &&
+                Number.isFinite(c[0]) &&
+                Number.isFinite(c[1]) &&
+                c[0] >= -90 &&
+                c[0] <= 90 &&
+                c[1] >= -180 &&
+                c[1] <= 180
+            )
+            .map((c) => [c[0], c[1]])
+        : [];
+
+      const existingParcels = await listParcels();
+      const collision = existingParcels.find(
+        (p) =>
+          p.id === rawParcel.id.trim().slice(0, 80) &&
+          (p.status !== 'draft' || p.cadastralRef !== rawParcel.cadastralRef.trim().slice(0, 80))
+      );
+      if (collision) {
+        return res.status(409).json({
+          error: 'A parcel with this identifier already exists and cannot be overwritten.'
+        });
+      }
+
       // Enforce mandatory pending-admin-verification gate server-side:
       // public submissions MUST start as 'draft' with no pre-minted title metadata.
       const sanitizedParcel: ParcelRecord = {
@@ -379,17 +504,14 @@ export function attachApiRoutes(app: express.Express): void {
         district: String(rawParcel.district || '').trim().slice(0, 200),
         areaSqm,
         perimeterM,
-        coordinates: Array.isArray(rawParcel.coordinates) ? rawParcel.coordinates.slice(0, 100) : [],
+        coordinates: validCoordinates,
         beacons: Array.isArray(rawParcel.beacons) ? rawParcel.beacons.slice(0, 100) : [],
         spatialHash: String(rawParcel.spatialHash || '').trim().slice(0, 128),
         documentHash: String(rawParcel.documentHash || '').trim().slice(0, 128),
         surveyPlanRef: String(rawParcel.surveyPlanRef || '').trim().slice(0, 120),
         intendedUse,
         priceUsd,
-        sellerWallet:
-          typeof rawParcel.sellerWallet === 'string' && rawParcel.sellerWallet.trim()
-            ? rawParcel.sellerWallet.trim().slice(0, 128)
-            : undefined,
+        sellerWallet: rawWallet || undefined,
         mapSnapshotUrl: isSafeSnapshotUrl(rawParcel.mapSnapshotUrl) ? rawParcel.mapSnapshotUrl : undefined,
         status: 'draft'
       };
@@ -480,10 +602,44 @@ export function attachApiRoutes(app: express.Express): void {
   app.post('/api/mqtt', async (req, res) => {
     try {
       const message = req.body?.message as MqttMessage | undefined;
-      if (!message || !message.id || !message.topic) {
+      if (
+        !message ||
+        typeof message.id !== 'string' ||
+        !message.id.trim() ||
+        !ALLOWED_MQTT_TOPICS.has(message.topic)
+      ) {
         return res.status(400).json({ error: 'Invalid MQTT event payload.' });
       }
-      const saved = await createMqttMessage(message);
+      if (ADMIN_ONLY_MQTT_TOPICS.has(message.topic)) {
+        const header = req.headers.authorization || '';
+        const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+        if (!token || !verifyAdminToken(token)) {
+          return res.status(403).json({ error: 'Restricted MQTT audit topic requires admin authorization.' });
+        }
+      }
+      const serializedPayload = JSON.stringify(message.payload ?? {});
+      if (serializedPayload.length > 8192) {
+        return res.status(400).json({ error: 'MQTT payload exceeds maximum size.' });
+      }
+      const sanitized: MqttMessage = {
+        id: message.id.trim().slice(0, 80),
+        topic: message.topic,
+        payload:
+          message.payload && typeof message.payload === 'object' && !Array.isArray(message.payload)
+            ? message.payload
+            : {},
+        qos: message.qos === 2 ? 2 : 1,
+        timestamp:
+          typeof message.timestamp === 'string' && message.timestamp.trim()
+            ? message.timestamp.trim().slice(0, 40)
+            : new Date().toLocaleTimeString(),
+        deliveryLatencyMs:
+          typeof message.deliveryLatencyMs === 'number' && Number.isFinite(message.deliveryLatencyMs)
+            ? Math.max(1, Math.min(5000, Math.round(message.deliveryLatencyMs)))
+            : 40,
+        status: 'delivered'
+      };
+      const saved = await createMqttMessage(sanitized);
       return res.status(201).json({ message: saved });
     } catch (err) {
       console.error('[anagu/api] Create MQTT error:', err instanceof Error ? err.message : err);
@@ -573,6 +729,9 @@ export function attachApiRoutes(app: express.Express): void {
 
   app.post('/api/admin/auth/login', async (req, res) => {
     try {
+      if (!checkAuthRateLimit(req, 'admin-login')) {
+        return res.status(429).json({ error: 'Too many admin sign-in attempts. Please wait a few minutes.' });
+      }
       const { email, password } = req.body ?? {};
       if (typeof email !== 'string' || typeof password !== 'string' || !email.trim() || !password) {
         return res.status(400).json({ error: 'Email and password are required.' });
@@ -819,9 +978,17 @@ export function attachApiRoutes(app: express.Express): void {
 
   app.get('/api/osm-tile/:z/:x/:y', async (req, res) => {
     try {
+      const rawY = req.params.y.replace(/\.png$/i, '');
+      if (
+        !/^\d+$/.test(req.params.z) ||
+        !/^\d+$/.test(req.params.x) ||
+        !/^\d+$/.test(rawY)
+      ) {
+        return res.status(400).send('Invalid tile coordinates');
+      }
       const z = Number.parseInt(req.params.z, 10);
       const x = Number.parseInt(req.params.x, 10);
-      const y = Number.parseInt(req.params.y.replace(/\.png$/i, ''), 10);
+      const y = Number.parseInt(rawY, 10);
       if (
         !Number.isInteger(z) ||
         !Number.isInteger(x) ||

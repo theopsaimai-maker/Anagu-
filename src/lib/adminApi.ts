@@ -28,6 +28,7 @@ export interface AdminOverviewResponse {
   mqttMessages: MqttMessage[];
   admins: AdminUser[];
   serverTime: string;
+  isOfflineFallback?: boolean;
 }
 
 interface StoredLocalAdmin extends AdminUser {
@@ -123,7 +124,14 @@ function emitLocalMqtt(topic: string, payload: Record<string, unknown>, qos: 1 |
   writeJsonStorage(LOCAL_MQTT_KEY, [nextMsg, ...existing]);
 }
 
-let adminBackendMode: 'unknown' | 'available' | 'unavailable' = 'unknown';
+export class AdminAuthError extends Error {
+  status: number;
+  constructor(message: string, status = 401) {
+    super(message);
+    this.name = 'AdminAuthError';
+    this.status = status;
+  }
+}
 
 class AdminFallbackNeededError extends Error {
   constructor() {
@@ -131,17 +139,37 @@ class AdminFallbackNeededError extends Error {
   }
 }
 
-async function adminRequest<T>(path: string, options?: RequestInit): Promise<T> {
-  if (adminBackendMode === 'unavailable') {
-    throw new AdminFallbackNeededError();
+async function fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const response = await fetch(url, init);
+      if (
+        attempt === 0 &&
+        (response.status === 502 || response.status === 503 || response.status === 504)
+      ) {
+        await new Promise((r) => setTimeout(r, 350));
+        continue;
+      }
+      return response;
+    } catch (err) {
+      lastError = err;
+      if (attempt === 0) {
+        await new Promise((r) => setTimeout(r, 350));
+      }
+    }
   }
+  throw lastError || new Error('Network error');
+}
 
+async function adminRequest<T>(path: string, options?: RequestInit): Promise<T> {
   const url = `${API_BASE}${path}`;
   const token = typeof window !== 'undefined' ? localStorage.getItem(ADMIN_TOKEN_KEY) : null;
 
   let response: Response;
   try {
-    response = await fetch(url, {
+    response = await fetchWithRetry(url, {
+      cache: 'no-store',
       ...options,
       headers: {
         'Content-Type': 'application/json',
@@ -150,7 +178,6 @@ async function adminRequest<T>(path: string, options?: RequestInit): Promise<T> 
       }
     });
   } catch {
-    adminBackendMode = 'unavailable';
     throw new AdminFallbackNeededError();
   }
 
@@ -160,23 +187,28 @@ async function adminRequest<T>(path: string, options?: RequestInit): Promise<T> 
 
   if (!response.ok) {
     const serverMsg = (data as { error?: string })?.error;
+    if (response.status === 401 || response.status === 403) {
+      throw new AdminAuthError(serverMsg || 'Admin authentication required. Please sign in.', response.status);
+    }
+
     const isRouteMissing =
       !isJson ||
-      response.status === 404 && serverMsg !== 'Parcel not found.' && serverMsg !== 'User not found.' && serverMsg !== 'Inquiry record not found.' ||
+      (response.status === 404 &&
+        serverMsg !== 'Parcel not found.' &&
+        serverMsg !== 'User not found.' &&
+        serverMsg !== 'Inquiry record not found.') ||
       response.status === 405 ||
       response.status === 502 ||
       response.status === 503 ||
       response.status === 504;
 
     if (isRouteMissing) {
-      adminBackendMode = 'unavailable';
       throw new AdminFallbackNeededError();
     }
 
     throw new Error(serverMsg || `Request failed (${response.status})`);
   }
 
-  adminBackendMode = 'available';
   return data as T;
 }
 
@@ -252,7 +284,7 @@ export async function apiAdminMe(): Promise<{ admin: AdminUser }> {
 
     const savedUser = readJsonStorage<AdminUser | null>(ADMIN_USER_KEY, null);
     if (!savedUser) {
-      throw new Error('Admin session expired.');
+      throw new AdminAuthError('Admin session expired.');
     }
     return { admin: savedUser };
   }
@@ -270,7 +302,8 @@ export async function apiAdminOverview(): Promise<AdminOverviewResponse> {
       inquiries: getLocalInquiries(),
       mqttMessages: getLocalMqtt(),
       admins: getLocalAdmins().map(stripAdminPassword),
-      serverTime: new Date().toISOString()
+      serverTime: new Date().toISOString(),
+      isOfflineFallback: true
     };
   }
 }

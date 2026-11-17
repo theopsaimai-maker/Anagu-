@@ -64,7 +64,7 @@ interface Props {
   initialRole?: AccessRoleId;
   accounts: StoredAuthAccount[];
   onAuthSuccess: (user: AuthUser) => void;
-  onRegisterAccount: (account: StoredAuthAccount) => void;
+  onRegisterAccount: (account: StoredAuthAccount, needsBackendSync?: boolean) => void;
   onBackToLanding: () => void;
 }
 
@@ -196,6 +196,25 @@ export const ScreenAuth: React.FC<Props> = ({
     } catch (err) {
       const found = accounts.find((acc) => acc.email.toLowerCase() === normalizedEmail);
       if (found && found.password === loginPassword) {
+        if (!isBackendUnavailableError(err)) {
+          // Local account exists on this device but was never synced to server (e.g. created offline): sync it now so other devices can also sign in
+          try {
+            const syncedUser = await apiSignup({
+              fullName: found.fullName,
+              email: found.email,
+              phone: found.phone,
+              role: found.role,
+              state: found.state,
+              credentialId: found.credentialId,
+              password: found.password
+            });
+            onRegisterAccount({ ...syncedUser, password: found.password }, false);
+            onAuthSuccess(syncedUser);
+            return;
+          } catch {
+            // Fall through to local sign-in on this device
+          }
+        }
         const { password: _removed, ...safeUser } = found;
         void _removed;
         onAuthSuccess(safeUser);
@@ -203,7 +222,7 @@ export const ScreenAuth: React.FC<Props> = ({
         if (found) {
           setErrorMsg('Incorrect password. Please check your password or use a verified sample profile below.');
         } else {
-          setErrorMsg('No Anagu account was found for that email. Switch to Sign Up to create an account.');
+          setErrorMsg('Unable to reach the registry server right now. Please check your connection and try again.');
         }
       } else {
         setErrorMsg(
@@ -258,7 +277,7 @@ export const ScreenAuth: React.FC<Props> = ({
         credentialId: trimmedCred,
         password: signupPassword
       });
-      onRegisterAccount({ ...createdUser, password: signupPassword });
+      onRegisterAccount({ ...createdUser, password: signupPassword }, false);
       onAuthSuccess(createdUser);
     } catch (err) {
       const alreadyExists = accounts.some((acc) => acc.email.toLowerCase() === normalizedEmail);
@@ -276,7 +295,7 @@ export const ScreenAuth: React.FC<Props> = ({
             credentialId: trimmedCred,
             createdAt: new Date().toISOString().slice(0, 10)
           };
-          onRegisterAccount({ ...localUser, password: signupPassword });
+          onRegisterAccount({ ...localUser, password: signupPassword }, true);
           onAuthSuccess(localUser);
         }
       } else {

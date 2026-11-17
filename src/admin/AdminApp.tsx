@@ -48,6 +48,7 @@ import { describeParcelGeography } from '../lib/geoDescription';
 import {
   ADMIN_TOKEN_KEY,
   ADMIN_USER_KEY,
+  AdminAuthError,
   apiAdminDeleteInquiry,
   apiAdminDeleteParcel,
   apiAdminDeleteUser,
@@ -65,12 +66,10 @@ import {
 type AdminTab = 'overview' | 'lands' | 'purchases' | 'users' | 'audit';
 type LandFilter = 'pending' | 'registered' | 'rejected' | 'revoked' | 'all';
 
-const PENDING_STATUSES: ParcelRecord['status'][] = [
-  'draft',
-  'spatial_verified',
-  'oracle_verified',
-  'legal_approved'
-];
+function isPendingAdminVerification(status: ParcelRecord['status'] | string | undefined): boolean {
+  const normalized = String(status || 'draft').trim().toLowerCase();
+  return normalized !== 'registered' && normalized !== 'rejected' && normalized !== 'revoked';
+}
 
 const usdFormatter = new Intl.NumberFormat('en-US', {
   style: 'currency',
@@ -181,6 +180,8 @@ export const AdminApp: React.FC = () => {
     setAdminUser(null);
   }, []);
 
+  const [isOfflineMode, setIsOfflineMode] = useState(false);
+
   const fetchOverview = useCallback(
     async (quiet = false) => {
       if (!quiet) setIsLoadingData(true);
@@ -191,11 +192,17 @@ export const AdminApp: React.FC = () => {
         setInquiries(data.inquiries);
         setMqttMessages(data.mqttMessages);
         setAdmins(data.admins);
+        setIsOfflineMode(Boolean(data.isOfflineFallback));
         setLastSyncedAt(new Date(data.serverTime).toLocaleTimeString());
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unable to fetch monitoring data.';
-        if (message.toLowerCase().includes('authentication') || message.toLowerCase().includes('expired')) {
+        if (
+          err instanceof AdminAuthError ||
+          message.toLowerCase().includes('authentication') ||
+          message.toLowerCase().includes('expired')
+        ) {
           clearSession();
+          setAuthError('Your admin session expired or the server restarted. Please sign in again.');
         } else if (!quiet) {
           setFeedbackBanner({ type: 'error', text: message });
         }
@@ -217,24 +224,44 @@ export const AdminApp: React.FC = () => {
         setAdminUser(res.admin);
         localStorage.setItem(ADMIN_USER_KEY, JSON.stringify(res.admin));
       })
-      .catch(() => {
-        if (active) clearSession();
+      .catch((err) => {
+        if (!active) return;
+        const msg = err instanceof Error ? err.message.toLowerCase() : '';
+        if (
+          err instanceof AdminAuthError ||
+          msg.includes('authentication') ||
+          msg.includes('expired')
+        ) {
+          clearSession();
+          setAuthError('Your admin session expired. Please sign in to view live registry applications.');
+        }
       });
     return () => {
       active = false;
     };
   }, [clearSession]);
 
-  // Initial overview load + live auto-polling
+  // Initial overview load + live auto-polling + focus/visibility sync
   const adminUserId = adminUser?.id;
   useEffect(() => {
     if (!adminUserId) return;
     void fetchOverview(false);
     if (!autoSync) return;
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void fetchOverview(true);
+      }
+    };
     const timer = window.setInterval(() => {
       void fetchOverview(true);
-    }, 8000);
-    return () => window.clearInterval(timer);
+    }, 6000);
+    window.addEventListener('focus', handleVisibility);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', handleVisibility);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
   }, [adminUserId, autoSync, fetchOverview]);
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -455,11 +482,11 @@ export const AdminApp: React.FC = () => {
 
   // Derived metrics
   const pendingParcels = useMemo(
-    () => parcels.filter((p) => PENDING_STATUSES.includes(p.status)),
+    () => parcels.filter((p) => isPendingAdminVerification(p.status)),
     [parcels]
   );
   const registeredParcels = useMemo(
-    () => parcels.filter((p) => p.status === 'registered'),
+    () => parcels.filter((p) => String(p.status).toLowerCase() === 'registered'),
     [parcels]
   );
   const rejectedParcels = useMemo(
@@ -893,6 +920,24 @@ export const AdminApp: React.FC = () => {
 
       {/* Main Content */}
       <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-8 py-6 space-y-6">
+        {isOfflineMode && (
+          <div className="rounded-xl px-4 py-3 text-xs flex flex-wrap items-center justify-between gap-3 border bg-amber-950/60 border-amber-500/50 text-amber-200">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+              <span>
+                Unable to reach the live registry server right now — showing local browser cache only. New user land submissions from other devices will appear once reconnected.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => void fetchOverview(false)}
+              className="px-3 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-100 font-semibold"
+            >
+              Retry Live Sync
+            </button>
+          </div>
+        )}
+
         {feedbackBanner && (
           <div
             className={`rounded-xl px-4 py-3 text-xs flex items-center justify-between gap-3 border ${
@@ -1039,7 +1084,7 @@ export const AdminApp: React.FC = () => {
                 </div>
               ) : (
                 <div className="divide-y divide-slate-800">
-                  {pendingParcels.slice(0, 5).map((parcel) => (
+                  {pendingParcels.slice(0, 10).map((parcel) => (
                     <div
                       key={parcel.id}
                       className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-4"
@@ -1230,14 +1275,27 @@ export const AdminApp: React.FC = () => {
             </div>
 
             {filteredParcels.length === 0 ? (
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-10 text-center text-xs text-slate-400">
-                No land parcels match this filter.
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-10 text-center space-y-3 text-xs text-slate-400">
+                <div>
+                  {searchQuery.trim()
+                    ? `No land parcels match "${searchQuery.trim()}" under this filter.`
+                    : 'No land parcels match this filter.'}
+                </div>
+                {searchQuery.trim() && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery('')}
+                    className="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold"
+                  >
+                    Clear Search Filter
+                  </button>
+                )}
               </div>
             ) : (
               <div className="space-y-3">
                 {filteredParcels.map((parcel) => {
-                  const isPending = PENDING_STATUSES.includes(parcel.status);
-                  const isRegistered = parcel.status === 'registered';
+                  const isPending = isPendingAdminVerification(parcel.status);
+                  const isRegistered = String(parcel.status).toLowerCase() === 'registered';
                   return (
                     <div
                       key={parcel.id}
@@ -1658,7 +1716,7 @@ export const AdminApp: React.FC = () => {
               </div>
 
               <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-slate-800">
-                {PENDING_STATUSES.includes(inspectParcel.status) ||
+                {isPendingAdminVerification(inspectParcel.status) ||
                 inspectParcel.status === 'rejected' ? (
                   <button
                     type="button"
@@ -1670,7 +1728,7 @@ export const AdminApp: React.FC = () => {
                   </button>
                 ) : null}
 
-                {PENDING_STATUSES.includes(inspectParcel.status) && (
+                {isPendingAdminVerification(inspectParcel.status) && (
                   <button
                     type="button"
                     disabled={actionBusyId === inspectParcel.id}
