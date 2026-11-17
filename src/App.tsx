@@ -46,7 +46,8 @@ import {
   apiListParcels,
   apiMintTitle,
   apiRevokeTitle,
-  checkBackendAvailable
+  checkBackendAvailable,
+  clearUserSessionToken
 } from './lib/api';
 
 const STORAGE_KEY = 'anagu_parcels_v1';
@@ -229,6 +230,7 @@ export default function App() {
   }, []);
 
   const handleSignOut = useCallback(() => {
+    clearUserSessionToken();
     setCurrentUser(null);
     setViewMode('landing');
   }, []);
@@ -287,12 +289,16 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [showTour, showShortcuts, viewMode, selectedFrameId, handleFocusFrame]);
 
-  // Pipeline state handlers (optimistic state + PostgreSQL persistence)
+  // Pipeline state handlers (optimistic state + backend persistence)
   const handleNewParcelSubmit = (newParcel: ParcelRecord) => {
     setParcels(prev => [newParcel, ...prev]);
-    apiCreateParcel(newParcel, currentUser?.id).catch(() => {
-      // Keep local state if offline
-    });
+    apiCreateParcel(newParcel, currentUser?.id)
+      .then((saved) => {
+        setParcels(prev => prev.map(p => (p.id === saved.id ? saved : p)));
+      })
+      .catch(() => {
+        // Keep local state if offline
+      });
     handleEmitMqtt('land/registration/status', {
       applicationId: newParcel.id,
       status: 'submitted',

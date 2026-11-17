@@ -6,6 +6,40 @@ import type {
   RevocationGround
 } from '../types/anagu';
 
+const API_BASE = ((import.meta as { env?: Record<string, string | undefined> }).env?.VITE_API_BASE_URL || '').replace(/\/+$/, '');
+const USER_TOKEN_KEY = 'anagu_user_token_v1';
+
+export function clearUserSessionToken(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.removeItem(USER_TOKEN_KEY);
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+function saveUserSessionToken(token?: string): void {
+  if (!token || typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(USER_TOKEN_KEY, token);
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+function getActiveBearerToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return (
+      localStorage.getItem(USER_TOKEN_KEY) ||
+      localStorage.getItem('anagu_admin_token_v1') ||
+      null
+    );
+  } catch {
+    return null;
+  }
+}
+
 export class ApiError extends Error {
   status: number;
   isBackendUnavailable: boolean;
@@ -35,7 +69,7 @@ export async function checkBackendAvailable(): Promise<boolean> {
   if (backendAvailability === 'unavailable') return false;
 
   try {
-    const response = await fetch('/api/health', { method: 'GET' });
+    const response = await fetch(`${API_BASE}/api/health`, { method: 'GET' });
     const contentType = response.headers.get('content-type') || '';
     if (!response.ok || !contentType.includes('application/json')) {
       backendAvailability = 'unavailable';
@@ -59,11 +93,13 @@ async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
     throw new ApiError('Backend API is unavailable in static preview mode.', 404, true);
   }
 
+  const token = getActiveBearerToken();
   let response: Response;
   try {
-    response = await fetch(url, {
+    response = await fetch(`${API_BASE}${url}`, {
       headers: {
         'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(options?.headers || {})
       },
       ...options
@@ -102,10 +138,11 @@ async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 export async function apiLogin(email: string, password: string): Promise<AuthUser> {
-  const data = await requestJson<{ user: AuthUser }>('/api/auth/login', {
+  const data = await requestJson<{ user: AuthUser; token?: string }>('/api/auth/login', {
     method: 'POST',
     body: JSON.stringify({ email, password })
   });
+  saveUserSessionToken(data.token);
   return data.user;
 }
 
@@ -118,18 +155,20 @@ export async function apiSignup(payload: {
   credentialId: string;
   password: string;
 }): Promise<AuthUser> {
-  const data = await requestJson<{ user: AuthUser }>('/api/auth/signup', {
+  const data = await requestJson<{ user: AuthUser; token?: string }>('/api/auth/signup', {
     method: 'POST',
     body: JSON.stringify(payload)
   });
+  saveUserSessionToken(data.token);
   return data.user;
 }
 
 export async function apiDemoLogin(role: AccessRoleId): Promise<AuthUser> {
-  const data = await requestJson<{ user: AuthUser }>('/api/auth/demo', {
+  const data = await requestJson<{ user: AuthUser; token?: string }>('/api/auth/demo', {
     method: 'POST',
     body: JSON.stringify({ role })
   });
+  saveUserSessionToken(data.token);
   return data.user;
 }
 

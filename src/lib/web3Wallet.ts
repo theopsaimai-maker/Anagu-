@@ -302,8 +302,165 @@ export function truncateAddress(address: string): string {
 
 export const ETH_USD_REFERENCE_RATE = 3200;
 
+export function cleanInvisibleChars(raw: string): string {
+  return raw
+    .replace(/[\u200B-\u200D\uFEFF\u00A0\r\n\t]/g, '')
+    .replace(/^["'`]+|["'`]+$/g, '')
+    .trim();
+}
+
+export function normalizeEvmAddress(raw: string): string {
+  let value = cleanInvisibleChars(raw);
+  if (!value) return '';
+
+  // Strip EIP-681 scheme prefixes like ethereum:, eth:, bnb:, polygon:, arbitrum:, base:
+  value = value.replace(/^(ethereum|eth|bnb|bsc|polygon|matic|arbitrum|base|optimism):(?:pay-)?/i, '');
+  // Strip trailing @chainId or ?query params from EIP-681 URIs
+  value = value.split(/[@?#]/)[0].trim();
+
+  // Extract 0x address if user pasted a block explorer URL (e.g. etherscan.io/address/0x...)
+  const embeddedMatch = value.match(/0x[a-fA-F0-9]{40}/i);
+  if (embeddedMatch) {
+    return '0x' + embeddedMatch[0].slice(2);
+  }
+
+  // Strip internal spaces (some wallets group hex characters with spaces)
+  const noSpaces = value.replace(/\s+/g, '');
+  if (/^0x[a-fA-F0-9]{40}$/i.test(noSpaces)) {
+    return '0x' + noSpaces.slice(2);
+  }
+
+  // Support 40-char pure hex without 0x prefix
+  if (/^[a-fA-F0-9]{40}$/.test(noSpaces)) {
+    return '0x' + noSpaces;
+  }
+
+  return value;
+}
+
 export function isValidEvmAddress(address: string): boolean {
-  return /^0x[a-fA-F0-9]{40}$/.test(address.trim());
+  const normalized = normalizeEvmAddress(address);
+  return /^0x[a-fA-F0-9]{40}$/.test(normalized);
+}
+
+export interface WalletValidationResult {
+  valid: boolean;
+  normalized: string;
+  kind: 'evm' | 'non_evm' | 'invalid';
+  label: string;
+  reason?: string;
+}
+
+export function validateSellerWallet(raw: string): WalletValidationResult {
+  const cleaned = cleanInvisibleChars(raw);
+  if (!cleaned) {
+    return {
+      valid: false,
+      normalized: '',
+      kind: 'invalid',
+      label: 'Wallet address required',
+      reason: 'Enter your Web3 wallet address or click "Use My Wallet".'
+    };
+  }
+
+  const evmNormalized = normalizeEvmAddress(cleaned);
+  if (/^0x[a-fA-F0-9]{40}$/.test(evmNormalized)) {
+    return {
+      valid: true,
+      normalized: evmNormalized,
+      kind: 'evm',
+      label: 'Valid EVM Wallet (Ethereum / Polygon / Base / BNB)'
+    };
+  }
+
+  // Check if user is partway through typing an 0x address to give helpful feedback
+  const noSpaces = cleaned.replace(/\s+/g, '');
+  if (/^0x/i.test(noSpaces)) {
+    if (/^0x[a-fA-F0-9]{62,64}$/i.test(noSpaces)) {
+      return {
+        valid: true,
+        normalized: '0x' + noSpaces.slice(2),
+        kind: 'non_evm',
+        label: 'Valid 64-byte Hex Wallet (Sui / Aptos / Starknet)'
+      };
+    }
+    const hexBody = noSpaces.slice(2);
+    if (!/^[a-fA-F0-9]*$/.test(hexBody)) {
+      return {
+        valid: false,
+        normalized: noSpaces,
+        kind: 'invalid',
+        label: 'Invalid characters',
+        reason: 'EVM 0x addresses only contain hexadecimal characters (0-9, a-f).'
+      };
+    }
+    return {
+      valid: false,
+      normalized: noSpaces,
+      kind: 'invalid',
+      label: `${noSpaces.length}/42 characters`,
+      reason: `Your 0x address currently has ${noSpaces.length} characters (an EVM address must be 42 characters: 0x + 40 hex characters).`
+    };
+  }
+
+  // Solana Base58 (32-44 chars)
+  if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(noSpaces)) {
+    return {
+      valid: true,
+      normalized: noSpaces,
+      kind: 'non_evm',
+      label: 'Valid Solana Web3 Wallet'
+    };
+  }
+
+  // TRON TRC-20 (T + 33 Base58)
+  if (/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(noSpaces)) {
+    return {
+      valid: true,
+      normalized: noSpaces,
+      kind: 'non_evm',
+      label: 'Valid TRON Wallet'
+    };
+  }
+
+  // TON (EQ/UQ + 46 chars)
+  if (/^(EQ|UQ)[A-Za-z0-9_-]{46}$/.test(noSpaces)) {
+    return {
+      valid: true,
+      normalized: noSpaces,
+      kind: 'non_evm',
+      label: 'Valid TON Wallet'
+    };
+  }
+
+  // Bitcoin (bech32 or legacy)
+  if (/^(bc1[a-zA-HJ-NP-Z0-9]{25,62}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})$/.test(noSpaces)) {
+    return {
+      valid: true,
+      normalized: noSpaces,
+      kind: 'non_evm',
+      label: 'Valid Bitcoin Wallet'
+    };
+  }
+
+  // ENS domain (.eth)
+  if (/^[a-z0-9-]+(\.[a-z0-9-]+)*\.eth$/i.test(noSpaces)) {
+    return {
+      valid: true,
+      normalized: noSpaces.toLowerCase(),
+      kind: 'non_evm',
+      label: 'Valid ENS Web3 Domain (.eth)'
+    };
+  }
+
+  return {
+    valid: false,
+    normalized: cleaned,
+    kind: 'invalid',
+    label: 'Unrecognized wallet format',
+    reason:
+      'Enter a valid Web3 wallet address (e.g. a 42-character 0x... EVM address, Solana address, TRON T..., or .eth name), or click "Use My Wallet".'
+  };
 }
 
 export function usdToEthString(usdAmount: number, ethPriceUsd = ETH_USD_REFERENCE_RATE): string {
@@ -332,9 +489,9 @@ export async function sendPaymentToSellerWallet(params: {
   toSellerWallet: string;
   ethAmount: string;
 }): Promise<{ txHash: string }> {
-  const recipient = params.toSellerWallet.trim();
+  const recipient = normalizeEvmAddress(params.toSellerWallet);
   if (!isValidEvmAddress(recipient)) {
-    throw new Error('Seller wallet address is invalid or missing.');
+    throw new Error('Direct on-chain ETH transfer requires a valid 0x... EVM seller wallet address.');
   }
   const valueHex = ethToWeiHex(params.ethAmount);
   const txHash = await params.provider.request({

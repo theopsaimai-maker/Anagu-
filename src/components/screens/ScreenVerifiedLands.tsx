@@ -960,7 +960,7 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                         {buyListing.sellerWallet}
                       </div>
 
-                      {connectedWallet && (
+                      {connectedWallet && isValidEvmAddress(buyListing.sellerWallet) && (
                         <div className="pt-2 border-t border-slate-800 space-y-2">
                           <div className="flex items-center justify-between gap-2 text-[10px] text-slate-400">
                             <span>Pay directly in ETH (Ref: 1 ETH ≈ ${ETH_USD_REFERENCE_RATE.toLocaleString('en-US')})</span>

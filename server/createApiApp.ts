@@ -37,14 +37,43 @@ import {
 
 dns.setDefaultResultOrder('ipv4first');
 
-const ADMIN_TOKEN_SECRET =
-  process.env.ADMIN_TOKEN_SECRET ||
-  process.env.SUPABASE_SECRET_KEY ||
-  process.env.DATABASE_URL ||
-  'anagu-admin-local-hmac-key-2026';
+const globalSecretStore = globalThis as unknown as { _anaguRuntimeHmacSecret?: string };
+
+function getSigningSecret(): string {
+  const configured =
+    process.env.ADMIN_TOKEN_SECRET?.trim() || process.env.SUPABASE_SECRET_KEY?.trim();
+  if (configured) {
+    return crypto.createHash('sha256').update(`anagu:hmac:${configured}`).digest('hex');
+  }
+  if (!globalSecretStore._anaguRuntimeHmacSecret) {
+    globalSecretStore._anaguRuntimeHmacSecret = crypto.randomBytes(32).toString('hex');
+  }
+  return globalSecretStore._anaguRuntimeHmacSecret;
+}
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+const ALLOWED_INTENDED_USES: ReadonlySet<ParcelRecord['intendedUse']> = new Set([
+  'Residential',
+  'Commercial',
+  'Agricultural',
+  'Industrial',
+  'Public Utility'
+]);
+
+function isSafeSnapshotUrl(url: unknown): url is string {
+  if (typeof url !== 'string') return false;
+  const trimmed = url.trim();
+  if (!trimmed || trimmed.length > 1_500_000) return false;
+  return (
+    /^data:image\/(png|jpeg|jpg|webp);base64,[A-Za-z0-9+/=]+$/i.test(trimmed) ||
+    /^https:\/\/[^\s<>"']+$/i.test(trimmed) ||
+    /^\/assets\/[^\s<>"']+$/i.test(trimmed)
+  );
+}
 
 function signAdminToken(admin: AdminUser): string {
   const payload = {
+    scope: 'admin',
     sub: admin.id,
     email: admin.email,
     fullName: admin.fullName,
@@ -53,7 +82,7 @@ function signAdminToken(admin: AdminUser): string {
     exp: Date.now() + 24 * 60 * 60 * 1000
   };
   const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
-  const sig = crypto.createHmac('sha256', ADMIN_TOKEN_SECRET).update(encoded).digest('base64url');
+  const sig = crypto.createHmac('sha256', getSigningSecret()).update(encoded).digest('base64url');
   return `${encoded}.${sig}`;
 }
 
@@ -63,19 +92,26 @@ function verifyAdminToken(token: string): { sub: string; email: string; fullName
     if (parts.length !== 2) return null;
     const [encoded, sig] = parts;
     const expectedSig = crypto
-      .createHmac('sha256', ADMIN_TOKEN_SECRET)
+      .createHmac('sha256', getSigningSecret())
       .update(encoded)
       .digest('base64url');
     const a = Buffer.from(sig);
     const b = Buffer.from(expectedSig);
     if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
     const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as {
+      scope?: string;
       sub?: string;
       email?: string;
       fullName?: string;
       exp?: number;
     };
-    if (!payload.sub || !payload.email || !payload.exp || Date.now() > payload.exp) {
+    if (
+      payload.scope !== 'admin' ||
+      !payload.sub ||
+      !payload.email ||
+      !payload.exp ||
+      Date.now() > payload.exp
+    ) {
       return null;
     }
     return { sub: payload.sub, email: payload.email, fullName: payload.fullName || payload.email };
@@ -84,10 +120,68 @@ function verifyAdminToken(token: string): { sub: string; email: string; fullName
   }
 }
 
+function signUserToken(user: { id: string; email: string; role: AccessRoleId }): string {
+  const payload = {
+    scope: 'user',
+    sub: user.id,
+    email: user.email,
+    role: user.role,
+    exp: Date.now() + 24 * 60 * 60 * 1000
+  };
+  const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  const sig = crypto.createHmac('sha256', getSigningSecret()).update(encoded).digest('base64url');
+  return `${encoded}.${sig}`;
+}
+
+function verifyUserToken(
+  token: string
+): { sub: string; email: string; role: AccessRoleId } | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 2) return null;
+    const [encoded, sig] = parts;
+    const expectedSig = crypto
+      .createHmac('sha256', getSigningSecret())
+      .update(encoded)
+      .digest('base64url');
+    const a = Buffer.from(sig);
+    const b = Buffer.from(expectedSig);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as {
+      scope?: string;
+      sub?: string;
+      email?: string;
+      role?: AccessRoleId;
+      exp?: number;
+    };
+    if (
+      payload.scope !== 'user' ||
+      !payload.sub ||
+      !payload.email ||
+      !payload.role ||
+      !payload.exp ||
+      Date.now() > payload.exp
+    ) {
+      return null;
+    }
+    return { sub: payload.sub, email: payload.email, role: payload.role };
+  } catch {
+    return null;
+  }
+}
+
 export function attachApiRoutes(app: express.Express): void {
+  app.disable('x-powered-by');
   app.use(express.json({ limit: '4mb' }));
 
-  // Allow cross-origin calls if admin & public sites are hosted on separate domains
+  // Security headers + CORS support for split-domain deployments
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    next();
+  });
+
   app.use('/api', (req, res, next) => {
     const origin = req.headers.origin;
     if (origin) {
@@ -101,6 +195,37 @@ export function attachApiRoutes(app: express.Express): void {
     }
     return next();
   });
+
+  const requireAdminAuth: express.RequestHandler = (req, res, next) => {
+    const header = req.headers.authorization || '';
+    const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+    const decoded = token ? verifyAdminToken(token) : null;
+    if (!decoded) {
+      return res.status(401).json({ error: 'Admin authentication required. Please sign in.' });
+    }
+    (req as express.Request & { adminSession?: typeof decoded }).adminSession = decoded;
+    return next();
+  };
+
+  const requireRoleOrAdmin = (allowedRoles: AccessRoleId[]): express.RequestHandler => {
+    return (req, res, next) => {
+      const header = req.headers.authorization || '';
+      const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+      if (!token) {
+        return res.status(401).json({ error: 'Authentication required for this registry action.' });
+      }
+      if (verifyAdminToken(token)) {
+        return next();
+      }
+      const userSession = verifyUserToken(token);
+      if (!userSession || !allowedRoles.includes(userSession.role)) {
+        return res.status(403).json({
+          error: `Restricted action: requires ${allowedRoles.join(' or ')} or administrator authorization.`
+        });
+      }
+      return next();
+    };
+  };
 
   // Health Check
   app.get('/api/health', async (_req, res) => {
@@ -117,14 +242,21 @@ export function attachApiRoutes(app: express.Express): void {
   app.post('/api/auth/login', async (req, res) => {
     try {
       const { email, password } = req.body ?? {};
-      if (typeof email !== 'string' || typeof password !== 'string' || !email.trim() || !password) {
-        return res.status(400).json({ error: 'Email and password are required.' });
+      if (
+        typeof email !== 'string' ||
+        typeof password !== 'string' ||
+        !EMAIL_PATTERN.test(email.trim()) ||
+        !password ||
+        password.length > 256
+      ) {
+        return res.status(400).json({ error: 'Valid email and password are required.' });
       }
       const result = await loginUser(email, password);
       if (result.error || !result.user) {
         return res.status(401).json({ error: result.error || 'Authentication failed.' });
       }
-      return res.json({ user: result.user });
+      const token = signUserToken(result.user);
+      return res.json({ user: result.user, token });
     } catch (err) {
       console.error('[anagu/api] Login error:', err instanceof Error ? err.message : err);
       return res.status(500).json({ error: 'Unable to sign in right now.' });
@@ -141,12 +273,19 @@ export function attachApiRoutes(app: express.Express): void {
         typeof credentialId !== 'string' ||
         typeof password !== 'string' ||
         !fullName.trim() ||
-        !email.trim() ||
+        fullName.trim().length > 160 ||
+        !EMAIL_PATTERN.test(email.trim()) ||
+        email.trim().length > 180 ||
         !phone.trim() ||
+        phone.trim().length > 40 ||
         !credentialId.trim() ||
-        password.length < 6
+        credentialId.trim().length > 120 ||
+        password.length < 6 ||
+        password.length > 256
       ) {
-        return res.status(400).json({ error: 'All required statutory registration fields and a valid password are required.' });
+        return res.status(400).json({
+          error: 'Valid name, email, phone, credential ID, and password (6–256 chars) are required.'
+        });
       }
       const validRole: AccessRoleId = role === 'surveyor' || role === 'oracle' ? role : 'citizen';
       const result = await signupUser({
@@ -154,14 +293,18 @@ export function attachApiRoutes(app: express.Express): void {
         email,
         phone,
         role: validRole,
-        state: typeof state === 'string' && state.trim() ? state.trim() : 'Federal Capital Territory (Abuja)',
+        state:
+          typeof state === 'string' && state.trim()
+            ? state.trim().slice(0, 100)
+            : 'Federal Capital Territory (Abuja)',
         credentialId,
         password
       });
       if (result.error || !result.user) {
         return res.status(409).json({ error: result.error || 'Could not create account.' });
       }
-      return res.status(201).json({ user: result.user });
+      const token = signUserToken(result.user);
+      return res.status(201).json({ user: result.user, token });
     } catch (err) {
       console.error('[anagu/api] Signup error:', err instanceof Error ? err.message : err);
       return res.status(500).json({ error: 'Unable to create account right now.' });
@@ -173,7 +316,8 @@ export function attachApiRoutes(app: express.Express): void {
       const roleParam = req.body?.role;
       const validRole: AccessRoleId = roleParam === 'surveyor' || roleParam === 'oracle' ? roleParam : 'citizen';
       const user = await loginDemoRole(validRole);
-      return res.json({ user });
+      const token = signUserToken(user);
+      return res.json({ user, token });
     } catch (err) {
       console.error('[anagu/api] Demo login error:', err instanceof Error ? err.message : err);
       return res.status(500).json({ error: 'Unable to sign in with sample profile.' });
@@ -193,12 +337,64 @@ export function attachApiRoutes(app: express.Express): void {
 
   app.post('/api/parcels', async (req, res) => {
     try {
-      const parcel = req.body?.parcel as ParcelRecord | undefined;
-      const userId = typeof req.body?.userId === 'string' ? req.body.userId : undefined;
-      if (!parcel || !parcel.id || !parcel.cadastralRef || !parcel.applicantName) {
+      const rawParcel = req.body?.parcel as ParcelRecord | undefined;
+      const rawUserId = typeof req.body?.userId === 'string' ? req.body.userId.trim() : undefined;
+      if (
+        !rawParcel ||
+        typeof rawParcel.id !== 'string' ||
+        typeof rawParcel.cadastralRef !== 'string' ||
+        typeof rawParcel.applicantName !== 'string' ||
+        !rawParcel.id.trim() ||
+        !rawParcel.cadastralRef.trim() ||
+        !rawParcel.applicantName.trim()
+      ) {
         return res.status(400).json({ error: 'Invalid parcel payload.' });
       }
-      const created = await createParcel(parcel, userId);
+
+      const intendedUse: ParcelRecord['intendedUse'] = ALLOWED_INTENDED_USES.has(rawParcel.intendedUse)
+        ? rawParcel.intendedUse
+        : 'Residential';
+      const areaSqm =
+        typeof rawParcel.areaSqm === 'number' && Number.isFinite(rawParcel.areaSqm) && rawParcel.areaSqm > 0
+          ? rawParcel.areaSqm
+          : 1200;
+      const perimeterM =
+        typeof rawParcel.perimeterM === 'number' && Number.isFinite(rawParcel.perimeterM) && rawParcel.perimeterM > 0
+          ? rawParcel.perimeterM
+          : 140;
+      const priceUsd =
+        typeof rawParcel.priceUsd === 'number' && Number.isFinite(rawParcel.priceUsd) && rawParcel.priceUsd > 0
+          ? rawParcel.priceUsd
+          : undefined;
+
+      // Enforce mandatory pending-admin-verification gate server-side:
+      // public submissions MUST start as 'draft' with no pre-minted title metadata.
+      const sanitizedParcel: ParcelRecord = {
+        id: rawParcel.id.trim().slice(0, 80),
+        cadastralRef: rawParcel.cadastralRef.trim().slice(0, 80),
+        applicantName: rawParcel.applicantName.trim().slice(0, 160),
+        applicantNin: String(rawParcel.applicantNin || '').trim().slice(0, 100),
+        state: String(rawParcel.state || 'Federal Capital Territory (Abuja)').trim().slice(0, 100),
+        lga: String(rawParcel.lga || 'Abuja Municipal (AMAC)').trim().slice(0, 100),
+        district: String(rawParcel.district || '').trim().slice(0, 200),
+        areaSqm,
+        perimeterM,
+        coordinates: Array.isArray(rawParcel.coordinates) ? rawParcel.coordinates.slice(0, 100) : [],
+        beacons: Array.isArray(rawParcel.beacons) ? rawParcel.beacons.slice(0, 100) : [],
+        spatialHash: String(rawParcel.spatialHash || '').trim().slice(0, 128),
+        documentHash: String(rawParcel.documentHash || '').trim().slice(0, 128),
+        surveyPlanRef: String(rawParcel.surveyPlanRef || '').trim().slice(0, 120),
+        intendedUse,
+        priceUsd,
+        sellerWallet:
+          typeof rawParcel.sellerWallet === 'string' && rawParcel.sellerWallet.trim()
+            ? rawParcel.sellerWallet.trim().slice(0, 128)
+            : undefined,
+        mapSnapshotUrl: isSafeSnapshotUrl(rawParcel.mapSnapshotUrl) ? rawParcel.mapSnapshotUrl : undefined,
+        status: 'draft'
+      };
+
+      const created = await createParcel(sanitizedParcel, rawUserId);
       return res.status(201).json({ parcel: created });
     } catch (err) {
       console.error('[anagu/api] Create parcel error:', err instanceof Error ? err.message : err);
@@ -206,7 +402,7 @@ export function attachApiRoutes(app: express.Express): void {
     }
   });
 
-  app.patch('/api/parcels/:id/spatial', async (req, res) => {
+  app.patch('/api/parcels/:id/spatial', requireRoleOrAdmin(['surveyor']), async (req, res) => {
     try {
       const updated = await updateParcelSpatial(req.params.id);
       if (!updated) {
@@ -219,7 +415,7 @@ export function attachApiRoutes(app: express.Express): void {
     }
   });
 
-  app.patch('/api/parcels/:id/oracle', async (req, res) => {
+  app.patch('/api/parcels/:id/oracle', requireRoleOrAdmin(['oracle']), async (req, res) => {
     try {
       const updated = await recordOracleAttestation(req.params.id, req.body ?? {});
       if (!updated) {
@@ -232,7 +428,7 @@ export function attachApiRoutes(app: express.Express): void {
     }
   });
 
-  app.patch('/api/parcels/:id/mint', async (req, res) => {
+  app.patch('/api/parcels/:id/mint', requireAdminAuth, async (req, res) => {
     try {
       const { tokenId, txHash, blockNumber, issuanceTimestamp } = req.body ?? {};
       if (typeof tokenId !== 'number' || typeof txHash !== 'string') {
@@ -249,7 +445,7 @@ export function attachApiRoutes(app: express.Express): void {
     }
   });
 
-  app.patch('/api/parcels/:id/revoke', async (req, res) => {
+  app.patch('/api/parcels/:id/revoke', requireAdminAuth, async (req, res) => {
     try {
       const { ground, gazetteNumber, reason } = req.body ?? {};
       const validGround: RevocationGround =
@@ -299,15 +495,25 @@ export function attachApiRoutes(app: express.Express): void {
   app.post('/api/inquiries', async (req, res) => {
     try {
       const { name, phone, email, state, message } = req.body ?? {};
-      if (typeof name !== 'string' || typeof phone !== 'string' || !name.trim() || !phone.trim()) {
-        return res.status(400).json({ error: 'Full name and phone number are required.' });
+      if (
+        typeof name !== 'string' ||
+        typeof phone !== 'string' ||
+        !name.trim() ||
+        name.trim().length > 160 ||
+        !phone.trim() ||
+        phone.trim().length > 40
+      ) {
+        return res.status(400).json({ error: 'Valid full name and phone number are required.' });
       }
       const saved = await createInquiry({
         name: name.trim(),
         phone: phone.trim(),
-        email: typeof email === 'string' && email.trim() ? email.trim() : undefined,
-        state: typeof state === 'string' && state.trim() ? state.trim() : 'Federal Capital Territory (Abuja)',
-        message: typeof message === 'string' && message.trim() ? message.trim() : undefined
+        email: typeof email === 'string' && email.trim() ? email.trim().slice(0, 180) : undefined,
+        state:
+          typeof state === 'string' && state.trim()
+            ? state.trim().slice(0, 100)
+            : 'Federal Capital Territory (Abuja)',
+        message: typeof message === 'string' && message.trim() ? message.trim().slice(0, 4000) : undefined
       });
       return res.status(201).json({ inquiry: saved });
     } catch (err) {
@@ -319,17 +525,6 @@ export function attachApiRoutes(app: express.Express): void {
   // ============================================================================
   // SEPARATE ADMIN PORTAL ROUTES (/api/admin/*)
   // ============================================================================
-  const requireAdminAuth: express.RequestHandler = (req, res, next) => {
-    const header = req.headers.authorization || '';
-    const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
-    const decoded = token ? verifyAdminToken(token) : null;
-    if (!decoded) {
-      return res.status(401).json({ error: 'Admin authentication required. Please sign in.' });
-    }
-    (req as express.Request & { adminSession?: typeof decoded }).adminSession = decoded;
-    return next();
-  };
-
   app.post('/api/admin/auth/signup', async (req, res) => {
     try {
       const { fullName, email, phone, department, state, password } = req.body ?? {};
@@ -339,13 +534,17 @@ export function attachApiRoutes(app: express.Express): void {
         typeof phone !== 'string' ||
         typeof password !== 'string' ||
         !fullName.trim() ||
-        !email.trim() ||
+        fullName.trim().length > 160 ||
+        !EMAIL_PATTERN.test(email.trim()) ||
+        email.trim().length > 180 ||
         !phone.trim() ||
-        password.length < 6
+        phone.trim().length > 40 ||
+        password.length < 6 ||
+        password.length > 256
       ) {
         return res
           .status(400)
-          .json({ error: 'Full name, email, phone, and a password (min 6 chars) are required.' });
+          .json({ error: 'Valid full name, email, phone, and password (6–256 chars) are required.' });
       }
       const result = await signupAdmin({
         fullName,
@@ -353,11 +552,11 @@ export function attachApiRoutes(app: express.Express): void {
         phone,
         department:
           typeof department === 'string' && department.trim()
-            ? department.trim()
+            ? department.trim().slice(0, 160)
             : 'Land Registry Administration',
         state:
           typeof state === 'string' && state.trim()
-            ? state.trim()
+            ? state.trim().slice(0, 100)
             : 'Federal Capital Territory (Abuja)',
         password
       });

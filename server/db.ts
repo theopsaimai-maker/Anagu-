@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { Pool } from 'pg';
 import type {
   AccessRoleId,
@@ -301,6 +303,8 @@ const globalStore = globalThis as unknown as {
   _anaguPgWarned?: boolean;
   _anaguSupabaseWarned?: boolean;
   _anaguSchemaPromise?: Promise<void> | null;
+  _anaguStoreLoaded?: boolean;
+  _anaguStorePath?: string;
   _anaguMemoryUsers?: StoredUserRow[];
   _anaguMemoryAdmins?: StoredAdminRow[];
   _anaguMemoryParcels?: ParcelRecord[];
@@ -321,7 +325,74 @@ const SEED_ADMINS: StoredAdminRow[] = [
   }
 ];
 
+function resolveStoreFilePath(): string {
+  if (globalStore._anaguStorePath) return globalStore._anaguStorePath;
+  const preferredDir = path.join(process.cwd(), '.anagu-data');
+  try {
+    fs.mkdirSync(preferredDir, { recursive: true });
+    fs.accessSync(preferredDir, fs.constants.W_OK);
+    globalStore._anaguStorePath = path.join(preferredDir, 'store.json');
+    return globalStore._anaguStorePath;
+  } catch {
+    globalStore._anaguStorePath = '/tmp/anagu-store.json';
+    return globalStore._anaguStorePath;
+  }
+}
+
+function loadDurableStoreOnce(): void {
+  if (globalStore._anaguStoreLoaded) return;
+  globalStore._anaguStoreLoaded = true;
+  try {
+    const filePath = resolveStoreFilePath();
+    if (!fs.existsSync(filePath)) return;
+    const raw = fs.readFileSync(filePath, 'utf8');
+    const parsed = JSON.parse(raw) as {
+      users?: StoredUserRow[];
+      admins?: StoredAdminRow[];
+      parcels?: ParcelRecord[];
+      mqtt?: MqttMessage[];
+      inquiries?: Array<InquiryInput & { id: string; createdAt: string }>;
+    };
+    if (Array.isArray(parsed.users) && parsed.users.length > 0) {
+      globalStore._anaguMemoryUsers = parsed.users;
+    }
+    if (Array.isArray(parsed.admins) && parsed.admins.length > 0) {
+      globalStore._anaguMemoryAdmins = parsed.admins;
+    }
+    if (Array.isArray(parsed.parcels) && parsed.parcels.length > 0) {
+      globalStore._anaguMemoryParcels = parsed.parcels;
+    }
+    if (Array.isArray(parsed.mqtt) && parsed.mqtt.length > 0) {
+      globalStore._anaguMemoryMqtt = parsed.mqtt;
+    }
+    if (Array.isArray(parsed.inquiries)) {
+      globalStore._anaguMemoryInquiries = parsed.inquiries;
+    }
+  } catch {
+    // Fallback to clean seeds if store file is unreadable or corrupt
+  }
+}
+
+function saveDurableStore(): void {
+  try {
+    const filePath = resolveStoreFilePath();
+    const payload = {
+      users: getMemoryUsers(),
+      admins: getMemoryAdmins(),
+      parcels: getMemoryParcels(),
+      mqtt: getMemoryMqtt(),
+      inquiries: getMemoryInquiries()
+    };
+    const tmpPath = `${filePath}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(payload), 'utf8');
+    fs.renameSync(tmpPath, filePath);
+  } catch {
+    // Ignore filesystem errors on read-only serverless targets
+  }
+}
+
 function getMemoryAdmins(): StoredAdminRow[] {
+  loadDurableStoreOnce();
   if (!globalStore._anaguMemoryAdmins) {
     globalStore._anaguMemoryAdmins = SEED_ADMINS.map((a) => ({
       ...a,
@@ -332,6 +403,7 @@ function getMemoryAdmins(): StoredAdminRow[] {
 }
 
 function getMemoryUsers(): StoredUserRow[] {
+  loadDurableStoreOnce();
   if (!globalStore._anaguMemoryUsers) {
     globalStore._anaguMemoryUsers = SEED_USERS.map((u) => ({ ...u }));
   }
@@ -339,6 +411,7 @@ function getMemoryUsers(): StoredUserRow[] {
 }
 
 function getMemoryParcels(): ParcelRecord[] {
+  loadDurableStoreOnce();
   if (!globalStore._anaguMemoryParcels) {
     globalStore._anaguMemoryParcels = SEED_PARCELS.map((p) => ({ ...p }));
   }
@@ -346,6 +419,7 @@ function getMemoryParcels(): ParcelRecord[] {
 }
 
 function getMemoryMqtt(): MqttMessage[] {
+  loadDurableStoreOnce();
   if (!globalStore._anaguMemoryMqtt) {
     globalStore._anaguMemoryMqtt = SEED_MQTT.map((m) => ({ ...m }));
   }
@@ -353,6 +427,7 @@ function getMemoryMqtt(): MqttMessage[] {
 }
 
 function getMemoryInquiries(): Array<InquiryInput & { id: string; createdAt: string }> {
+  loadDurableStoreOnce();
   if (!globalStore._anaguMemoryInquiries) {
     globalStore._anaguMemoryInquiries = [];
   }
@@ -987,6 +1062,15 @@ export async function createParcel(parcel: ParcelRecord, userId?: string): Promi
         )
         ON CONFLICT (id) DO UPDATE SET
           applicant_name = EXCLUDED.applicant_name,
+          applicant_nin = EXCLUDED.applicant_nin,
+          state = EXCLUDED.state,
+          lga = EXCLUDED.lga,
+          district = EXCLUDED.district,
+          area_sqm = EXCLUDED.area_sqm,
+          perimeter_m = EXCLUDED.perimeter_m,
+          coordinates = EXCLUDED.coordinates,
+          beacons = EXCLUDED.beacons,
+          intended_use = EXCLUDED.intended_use,
           status = EXCLUDED.status,
           updated_at = NOW()
         RETURNING *
@@ -1044,7 +1128,13 @@ export async function createParcel(parcel: ParcelRecord, userId?: string): Promi
   }
 
   const list = getMemoryParcels();
-  list.unshift(parcel);
+  const existingIdx = list.findIndex((p) => p.id === parcel.id);
+  if (existingIdx >= 0) {
+    list[existingIdx] = parcel;
+  } else {
+    list.unshift(parcel);
+  }
+  saveDurableStore();
   return parcel;
 }
 
@@ -1089,6 +1179,7 @@ export async function updateParcelSpatial(parcelId: string): Promise<ParcelRecor
   const found = list.find((p) => p.id === parcelId);
   if (!found) return null;
   found.status = 'spatial_verified';
+  saveDurableStore();
   return found;
 }
 
@@ -1175,6 +1266,7 @@ export async function recordOracleAttestation(
   const found = list.find((p) => p.id === parcelId);
   if (!found) return null;
   found.status = 'oracle_verified';
+  saveDurableStore();
   return found;
 }
 
@@ -1243,6 +1335,7 @@ export async function mintParcelTitle(
   found.txHash = txHash;
   found.blockNumber = finalBlock;
   found.issuanceTimestamp = finalTs;
+  saveDurableStore();
   return found;
 }
 
@@ -1307,6 +1400,7 @@ export async function revokeParcelTitle(
   if (!found) return null;
   found.status = 'revoked';
   found.revocationData = revocationData;
+  saveDurableStore();
   return found;
 }
 
@@ -1392,6 +1486,7 @@ export async function createMqttMessage(msg: MqttMessage): Promise<MqttMessage> 
 
   const list = getMemoryMqtt();
   list.unshift(msg);
+  saveDurableStore();
   return msg;
 }
 
@@ -1438,6 +1533,7 @@ export async function createInquiry(input: InquiryInput): Promise<{ id: string; 
   }
 
   getMemoryInquiries().unshift({ ...input, id, createdAt });
+  saveDurableStore();
   return { id, createdAt };
 }
 
@@ -1532,6 +1628,7 @@ export async function signupUser(input: SignupInput): Promise<{ user?: AuthUser;
     created_at: createdAt
   };
   users.unshift(row);
+  saveDurableStore();
   return { user: mapUserRow(row) };
 }
 
@@ -1732,6 +1829,7 @@ export async function signupAdmin(
     created_at: createdAt
   };
   admins.unshift(row);
+  saveDurableStore();
   return { admin: mapAdminRow(row) };
 }
 
@@ -1884,6 +1982,7 @@ export async function updateUserRole(userId: string, role: AccessRoleId): Promis
   const found = getMemoryUsers().find((u) => u.id === userId);
   if (!found) return null;
   found.role = role;
+  saveDurableStore();
   return mapUserRow(found);
 }
 
@@ -1915,6 +2014,7 @@ export async function deleteUser(userId: string): Promise<boolean> {
   const idx = users.findIndex((u) => u.id === userId);
   if (idx === -1) return false;
   users.splice(idx, 1);
+  saveDurableStore();
   return true;
 }
 
@@ -2001,6 +2101,7 @@ export async function deleteInquiry(inquiryId: string): Promise<boolean> {
   const idx = list.findIndex((i) => i.id === inquiryId);
   if (idx === -1) return false;
   list.splice(idx, 1);
+  saveDurableStore();
   return true;
 }
 
@@ -2042,6 +2143,7 @@ export async function adminSetParcelStatus(
   const found = getMemoryParcels().find((p) => p.id === parcelId);
   if (!found) return null;
   found.status = status;
+  saveDurableStore();
   return found;
 }
 
@@ -2073,6 +2175,7 @@ export async function adminDeleteParcel(parcelId: string): Promise<boolean> {
   const idx = list.findIndex((p) => p.id === parcelId);
   if (idx === -1) return false;
   list.splice(idx, 1);
+  saveDurableStore();
   return true;
 }
 

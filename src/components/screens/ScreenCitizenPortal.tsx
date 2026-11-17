@@ -30,10 +30,11 @@ import {
   searchNigerianLandmarks
 } from '../../lib/osm';
 import {
+  cleanInvisibleChars,
   connectWeb3Wallet,
   discoverWalletsOnce,
   formatWalletError,
-  isValidEvmAddress
+  validateSellerWallet
 } from '../../lib/web3Wallet';
 import { OpenStreetMapWidget } from '../maps/OpenStreetMapWidget';
 
@@ -163,6 +164,11 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
   const livePolygon = useMemo(
     () => parseDemarcationPolygon(landDemarcation.trim()),
     [landDemarcation]
+  );
+
+  const walletCheck = useMemo(
+    () => validateSellerWallet(sellerWallet),
+    [sellerWallet]
   );
 
   const recenterMapForRegion = async (
@@ -341,9 +347,10 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
       setFormError('Please enter your applicant full name and NIN / RC number.');
       return;
     }
-    if (!isValidEvmAddress(sellerWallet)) {
+    if (!walletCheck.valid) {
       setFormError(
-        "Please enter a valid Seller's Web3 Wallet address (42-character 0x... address) so buyers can pay directly."
+        walletCheck.reason ||
+          "Please enter a valid Seller's Web3 Wallet address so buyers can pay directly."
       );
       return;
     }
@@ -420,7 +427,7 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
       perimeterM,
       intendedUse,
       priceUsd,
-      sellerWallet: sellerWallet.trim(),
+      sellerWallet: walletCheck.normalized,
       mapSnapshotUrl: mapSnapshotUrl || undefined,
       status: 'draft',
       spatialHash:
@@ -655,13 +662,32 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
                         id="seller-wallet-input"
                         type="text"
                         required
+                        spellCheck={false}
+                        autoComplete="off"
                         value={sellerWallet}
                         onChange={(e) => {
-                          setSellerWallet(e.target.value);
+                          const rawVal = cleanInvisibleChars(e.target.value);
+                          const check = validateSellerWallet(rawVal);
+                          setSellerWallet(check.valid ? check.normalized : rawVal);
                           setSellerWalletNote(null);
+                          if (formError?.toLowerCase().includes('wallet')) {
+                            setFormError(null);
+                          }
                         }}
-                        placeholder="0x71C7656EC7ab88b098defB751B7401B5f6d8976F"
-                        className="w-full pl-10 pr-3.5 py-2.5 bg-slate-950 border border-slate-700 focus:border-emerald-500 rounded-xl font-mono text-slate-100 placeholder:text-slate-600 outline-none transition-colors"
+                        onBlur={() => {
+                          const check = validateSellerWallet(sellerWallet);
+                          if (check.valid && check.normalized !== sellerWallet) {
+                            setSellerWallet(check.normalized);
+                          }
+                        }}
+                        placeholder="0x71C7656EC7ab88b098defB751B7401B5f6d8976F (or Solana / TRON / .eth)"
+                        className={`w-full pl-10 pr-3.5 py-2.5 bg-slate-950 border rounded-xl font-mono text-slate-100 placeholder:text-slate-600 outline-none transition-colors ${
+                          sellerWallet.trim().length === 0
+                            ? 'border-slate-700 focus:border-emerald-500'
+                            : walletCheck.valid
+                            ? 'border-emerald-500/70 focus:border-emerald-400'
+                            : 'border-amber-500/70 focus:border-amber-400'
+                        }`}
                       />
                     </div>
                     <button
@@ -674,10 +700,38 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
                       <span>{isConnectingSellerWallet ? 'Connecting...' : 'Use My Wallet'}</span>
                     </button>
                   </div>
-                  <p className="text-[11px] text-slate-400">
-                    {sellerWalletNote ||
-                      'Buyers on Access Lands will pay directly into this EVM wallet address when purchasing this land.'}
-                  </p>
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                    <p
+                      className={
+                        sellerWalletNote
+                          ? 'text-emerald-400'
+                          : sellerWallet.trim().length > 0 && walletCheck.valid
+                          ? 'text-emerald-400'
+                          : sellerWallet.trim().length > 0 && !walletCheck.valid
+                          ? 'text-amber-300'
+                          : 'text-slate-400'
+                      }
+                    >
+                      {sellerWalletNote
+                        ? sellerWalletNote
+                        : sellerWallet.trim().length > 0
+                        ? walletCheck.valid
+                          ? `${walletCheck.label} · Ready for buyer checkout`
+                          : walletCheck.reason || walletCheck.label
+                        : 'Buyers on Access Lands will pay directly into this Web3 wallet address.'}
+                    </p>
+                    {sellerWallet.trim().length > 0 && (
+                      <span
+                        className={`font-mono text-[10px] px-2 py-0.5 rounded border ${
+                          walletCheck.valid
+                            ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-300'
+                            : 'bg-amber-950/60 border-amber-500/40 text-amber-300'
+                        }`}
+                      >
+                        {walletCheck.valid ? 'Verified Format' : walletCheck.label}
+                      </span>
+                    )}
+                  </div>
                 </div>
 
                 <label className="block space-y-1.5">
