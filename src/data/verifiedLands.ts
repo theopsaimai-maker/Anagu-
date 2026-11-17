@@ -1,14 +1,23 @@
 import { VerifiedLandListing } from '../types/anagu';
+import { getStateCenter } from '../lib/osm';
 
-import katampeImg from '../assets/images/katampe_abuja_hills_1794830624531.jpg';
-import lekkiImg from '../assets/images/lekki_lagos_waterfront_1794830624949.jpg';
-import enuguImg from '../assets/images/enugu_independence_layout_1794830625414.jpg';
-import guzapeImg from '../assets/images/guzape_abuja_terrace_1794830626150.jpg';
-import ikejaImg from '../assets/images/ikeja_gra_lagos_1794830626734.jpg';
-import sagamuImg from '../assets/images/sagamu_industrial_corridor_1794830626335.jpg';
-import portHarcourtImg from '../assets/images/portharcourt_new_gra_1794830627597.jpg';
-import kanoImg from '../assets/images/kano_nassarawa_gra_1794830628250.jpg';
-import ibadanImg from '../assets/images/ibadan_old_bodija_1794830627761.jpg';
+export function buildPolygonAroundPoint(
+  lat: number,
+  lng: number,
+  halfSpanDeg = 0.0012
+): [number, number][] {
+  return [
+    [Number((lat + halfSpanDeg * 0.85).toFixed(5)), Number((lng - halfSpanDeg).toFixed(5))],
+    [Number((lat + halfSpanDeg * 0.85).toFixed(5)), Number((lng + halfSpanDeg).toFixed(5))],
+    [Number((lat - halfSpanDeg * 0.85).toFixed(5)), Number((lng + halfSpanDeg).toFixed(5))],
+    [Number((lat - halfSpanDeg * 0.85).toFixed(5)), Number((lng - halfSpanDeg).toFixed(5))]
+  ];
+}
+
+export function getDefaultPolygonForState(stateName: string): [number, number][] {
+  const [lat, lng] = getStateCenter(stateName);
+  return buildPolygonAroundPoint(lat, lng, 0.0011);
+}
 
 export const VERIFIED_LANDS_FOR_SALE: VerifiedLandListing[] = [
   {
@@ -27,8 +36,15 @@ export const VERIFIED_LANDS_FOR_SALE: VerifiedLandListing[] = [
     spatialHash: '0x3a9f0291e0a9d821fc003192019a8200192a01f8938210921938910293019283',
     tokenId: 4092,
     verificationBadge: 'C of O Verified',
-    landmark: 'Aso Rock & Abuja Central Skyline',
-    imageUrl: katampeImg
+    landmark: 'Katampe Extension · Abuja Diplomatic Zone',
+    imageUrl: '',
+    isOsmSnapshot: true,
+    coordinates: [
+      [9.1025, 7.4521],
+      [9.1038, 7.4539],
+      [9.1029, 7.4552],
+      [9.1016, 7.4534]
+    ]
   },
   {
     id: 'VLD-002',
@@ -46,8 +62,15 @@ export const VERIFIED_LANDS_FOR_SALE: VerifiedLandListing[] = [
     spatialHash: '0x7b210948ac019283f01928401928301928301928301928301928301928301928',
     tokenId: 4105,
     verificationBadge: 'C of O Verified',
-    landmark: 'Lekki-Ikoyi Link Bridge & Lagos Lagoon',
-    imageUrl: lekkiImg
+    landmark: 'Lekki-Ikoyi Link Bridge · Lagos Lagoon',
+    imageUrl: '',
+    isOsmSnapshot: true,
+    coordinates: [
+      [6.4421, 3.4812],
+      [6.4435, 3.483],
+      [6.4428, 3.4845],
+      [6.4414, 3.4827]
+    ]
   },
   {
     id: 'VLD-003',
@@ -65,8 +88,15 @@ export const VERIFIED_LANDS_FOR_SALE: VerifiedLandListing[] = [
     spatialHash: '0x5c11902938475610aabbccddeeff11223344556677889900aabbccddeeff1122',
     tokenId: 4118,
     verificationBadge: 'C of O Verified',
-    landmark: 'Udi Hills & Independence Avenue',
-    imageUrl: enuguImg
+    landmark: 'Independence Avenue · Enugu North',
+    imageUrl: '',
+    isOsmSnapshot: true,
+    coordinates: [
+      [6.452, 7.514],
+      [6.4536, 7.5162],
+      [6.4525, 7.5178],
+      [6.4509, 7.5156]
+    ]
   },
   {
     id: 'VLD-004',
@@ -84,8 +114,15 @@ export const VERIFIED_LANDS_FOR_SALE: VerifiedLandListing[] = [
     spatialHash: '0x91827364550192837465aabbccdd112233445566778899001122334455667788',
     tokenId: 4132,
     verificationBadge: 'C of O Verified',
-    landmark: 'Guzape Ridge & National Skyline',
-    imageUrl: guzapeImg
+    landmark: 'Guzape Ridge · Asokoro Corridor',
+    imageUrl: '',
+    isOsmSnapshot: true,
+    coordinates: [
+      [9.0185, 7.5152],
+      [9.0199, 7.5169],
+      [9.0191, 7.5183],
+      [9.0177, 7.5166]
+    ]
   },
   {
     id: 'VLD-005',
@@ -103,8 +140,15 @@ export const VERIFIED_LANDS_FOR_SALE: VerifiedLandListing[] = [
     spatialHash: '0x445566778899aabbccddeeff00112233445566778899aabbccddeeff00112233',
     tokenId: 4147,
     verificationBadge: 'C of O Verified',
-    landmark: 'Ikeja Executive Business Boulevard',
-    imageUrl: ikejaImg
+    landmark: 'Joel Ogunnaike St · Ikeja GRA',
+    imageUrl: '',
+    isOsmSnapshot: true,
+    coordinates: [
+      [6.5784, 3.3562],
+      [6.5798, 3.3581],
+      [6.5788, 3.3596],
+      [6.5774, 3.3577]
+    ]
   },
   {
     id: 'VLD-006',
@@ -122,8 +166,15 @@ export const VERIFIED_LANDS_FOR_SALE: VerifiedLandListing[] = [
     spatialHash: '0x6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b',
     tokenId: 4160,
     verificationBadge: 'C of O Verified',
-    landmark: 'Sagamu Expressway Logistics Interchange',
-    imageUrl: sagamuImg
+    landmark: 'Sagamu-Benin Expressway Interchange',
+    imageUrl: '',
+    isOsmSnapshot: true,
+    coordinates: [
+      [6.8322, 3.6319],
+      [6.8344, 3.6348],
+      [6.8331, 3.6366],
+      [6.8309, 3.6337]
+    ]
   },
   {
     id: 'VLD-007',
@@ -141,8 +192,15 @@ export const VERIFIED_LANDS_FOR_SALE: VerifiedLandListing[] = [
     spatialHash: '0x8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e',
     tokenId: 4174,
     verificationBadge: 'C of O Verified',
-    landmark: 'New GRA Palm Boulevard',
-    imageUrl: portHarcourtImg
+    landmark: 'Tombia Extension · New GRA Phase 2',
+    imageUrl: '',
+    isOsmSnapshot: true,
+    coordinates: [
+      [4.8242, 6.9934],
+      [4.8256, 6.9951],
+      [4.8247, 6.9964],
+      [4.8233, 6.9947]
+    ]
   },
   {
     id: 'VLD-008',
@@ -160,8 +218,15 @@ export const VERIFIED_LANDS_FOR_SALE: VerifiedLandListing[] = [
     spatialHash: '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef',
     tokenId: 4189,
     verificationBadge: 'C of O Verified',
-    landmark: 'Nassarawa Civic & Commercial Quarter',
-    imageUrl: kanoImg
+    landmark: 'Ahmadu Bello Way · Nassarawa GRA',
+    imageUrl: '',
+    isOsmSnapshot: true,
+    coordinates: [
+      [11.9964, 8.5458],
+      [11.9979, 8.5477],
+      [11.9969, 8.5491],
+      [11.9954, 8.5472]
+    ]
   },
   {
     id: 'VLD-009',
@@ -179,28 +244,14 @@ export const VERIFIED_LANDS_FOR_SALE: VerifiedLandListing[] = [
     spatialHash: '0xabcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789',
     tokenId: 4203,
     verificationBadge: 'C of O Verified',
-    landmark: 'Cocoa House Skyline & Bodija Canopy',
-    imageUrl: ibadanImg
+    landmark: 'Awolowo Avenue · Old Bodija',
+    imageUrl: '',
+    isOsmSnapshot: true,
+    coordinates: [
+      [7.4198, 3.9082],
+      [7.4212, 3.9099],
+      [7.4203, 3.9112],
+      [7.4189, 3.9095]
+    ]
   }
 ];
-
-export function getLandmarkImageForParcel(
-  state: string,
-  intendedUse: VerifiedLandListing['intendedUse']
-): string {
-  const s = state.toLowerCase();
-  if (s.includes('lagos')) return intendedUse === 'Commercial' ? ikejaImg : lekkiImg;
-  if (s.includes('enugu')) return enuguImg;
-  if (s.includes('ogun')) return sagamuImg;
-  if (s.includes('rivers') || s.includes('port harcourt')) return portHarcourtImg;
-  if (s.includes('kano')) return kanoImg;
-  if (s.includes('oyo') || s.includes('ibadan')) return ibadanImg;
-  if (s.includes('abuja') || s.includes('fct') || s.includes('federal capital')) {
-    return intendedUse === 'Commercial' ? guzapeImg : katampeImg;
-  }
-  if (intendedUse === 'Industrial') return sagamuImg;
-  if (intendedUse === 'Agricultural') return ibadanImg;
-  if (intendedUse === 'Commercial') return kanoImg;
-  return katampeImg;
-}
-

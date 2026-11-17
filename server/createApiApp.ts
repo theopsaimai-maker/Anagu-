@@ -844,20 +844,41 @@ export function attachApiRoutes(app: express.Express): void {
         return res.send(cached);
       }
 
-      const upstream = await fetch(`https://tile.openstreetmap.org/${z}/${x}/${y}.png`, {
-        headers: {
-          'User-Agent': 'AnaguLandAdministration/1.0 (+https://anagu.ng)'
-        },
-        signal: AbortSignal.timeout(6000)
-      });
+      const mirrors = [
+        `https://tile.openstreetmap.org/${z}/${x}/${y}.png`,
+        `https://a.tile.openstreetmap.org/${z}/${x}/${y}.png`,
+        `https://b.tile.openstreetmap.org/${z}/${x}/${y}.png`,
+        `https://c.tile.openstreetmap.org/${z}/${x}/${y}.png`
+      ];
+      const startIdx = (x + y) % mirrors.length;
+      let buf: Buffer | null = null;
+      let lastStatus = 502;
 
-      if (!upstream.ok) {
-        return res.status(upstream.status).send('Upstream OSM tile unavailable');
+      for (let attempt = 0; attempt < mirrors.length; attempt++) {
+        const mirrorUrl = mirrors[(startIdx + attempt) % mirrors.length];
+        try {
+          const upstream = await fetch(mirrorUrl, {
+            headers: {
+              'User-Agent': 'AnaguLandAdministration/1.0 (+https://anagu.ng)'
+            },
+            signal: AbortSignal.timeout(5500)
+          });
+          lastStatus = upstream.status;
+          if (upstream.ok) {
+            const arrayBuf = await upstream.arrayBuffer();
+            buf = Buffer.from(arrayBuf);
+            break;
+          }
+        } catch {
+          // Try next OSM mirror
+        }
       }
 
-      const arrayBuf = await upstream.arrayBuffer();
-      const buf = Buffer.from(arrayBuf);
-      if (osmTileCache.size > 500) {
+      if (!buf) {
+        return res.status(lastStatus).send('Upstream OSM tile unavailable');
+      }
+
+      if (osmTileCache.size > 2500) {
         const firstKey = osmTileCache.keys().next().value;
         if (firstKey) osmTileCache.delete(firstKey);
       }

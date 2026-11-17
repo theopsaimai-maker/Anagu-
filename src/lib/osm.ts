@@ -371,7 +371,7 @@ export async function captureOsmMapSnapshot(
     ctx.restore();
   }
 
-  // Top-left OpenStreetMap coordinate pill
+  // Top-left cadastral coordinate stamp
   const coordText = `${centerLat.toFixed(4)}°N, ${centerLng.toFixed(4)}°E`;
   ctx.font = '600 12px "JetBrains Mono", monospace';
   const coordWidth = ctx.measureText(coordText).width + 20;
@@ -385,9 +385,9 @@ export async function captureOsmMapSnapshot(
   ctx.fillStyle = '#6ee7b7';
   ctx.fillText(coordText, 24, 31);
 
-  // Top-right OSM attribution badge
-  const attrText = locationLabel ? `OSM · ${locationLabel.slice(0, 26)}` : '© OpenStreetMap';
-  ctx.font = '500 11px "Plus Jakarta Sans", sans-serif';
+  // Top-right land registry stamp
+  const attrText = locationLabel ? locationLabel.slice(0, 28) : 'ANAGU LAND REGISTRY';
+  ctx.font = '600 11px "Plus Jakarta Sans", sans-serif';
   const attrWidth = ctx.measureText(attrText).width + 16;
   ctx.fillStyle = 'rgba(7, 11, 18, 0.78)';
   ctx.beginPath();

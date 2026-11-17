@@ -19,13 +19,14 @@ import {
   Check,
   RefreshCw,
   ShieldCheck,
-  Loader2
+  Loader2,
+  Maximize2
 } from 'lucide-react';
 import { AuthUser, ParcelRecord, VerifiedLandListing } from '../../types/anagu';
-import { VERIFIED_LANDS_FOR_SALE } from '../../data/verifiedLands';
+import { VERIFIED_LANDS_FOR_SALE, getDefaultPolygonForState } from '../../data/verifiedLands';
 import { ASSET_IMAGES } from '../../data/mockData';
 import { apiCreateInquiry } from '../../lib/api';
-import { OpenStreetMapWidget } from '../maps/OpenStreetMapWidget';
+import { LandRegistrySnapshot } from '../maps/LandRegistrySnapshot';
 import {
   ConnectedWalletResult,
   DiscoveredWallet,
@@ -83,9 +84,9 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedUse, setSelectedUse] = useState<'All' | ParcelRecord['intendedUse']>('All');
-  const [failedImages, setFailedImages] = useState<Record<string, boolean>>({});
   const [deedListing, setDeedListing] = useState<VerifiedLandListing | null>(null);
   const [buyListing, setBuyListing] = useState<VerifiedLandListing | null>(null);
+  const [fullMapListing, setFullMapListing] = useState<VerifiedLandListing | null>(null);
 
   const [buyerName, setBuyerName] = useState(currentUser?.fullName || '');
   const [buyerPhone, setBuyerPhone] = useState(currentUser?.phone || '');
@@ -182,9 +183,12 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
         spatialHash: p.spatialHash,
         tokenId: p.tokenId || 4300 + idx,
         verificationBadge: 'Registered & Verified',
-        landmark: `OpenStreetMap · ${p.lga}, ${p.state}`,
+        landmark: `${p.lga}, ${p.state}`,
         imageUrl: p.mapSnapshotUrl || '',
-        coordinates: p.coordinates,
+        coordinates:
+          p.coordinates && p.coordinates.length >= 3
+            ? p.coordinates
+            : getDefaultPolygonForState(p.state),
         isOsmSnapshot: true
       }));
     return [...newlyRegistered, ...VERIFIED_LANDS_FOR_SALE];
@@ -450,31 +454,55 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
       </header>
 
       {/* Main Content */}
-      <main className="w-full max-w-[1280px] mx-auto px-4 sm:px-6 lg:px-10 py-8 sm:py-10 space-y-6">
-        {/* Heading & Responsive Filter Controls */}
-        <div className="space-y-5 border-b border-slate-800/80 pb-6">
-          <div className="space-y-2 max-w-2xl">
-            <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight text-balance">
-              Available Verified Lands to Buy
-            </h1>
-            <p className="text-xs sm:text-sm text-slate-400">
-              Every verified listing includes landmark photography, cleared satellite boundary coordinates, and USD acquisition pricing.
-            </p>
+      <main className="w-full max-w-[1280px] mx-auto px-4 sm:px-6 lg:px-10 py-8 sm:py-10 space-y-8">
+        {/* Heading, Registry Summary & Filter Controls */}
+        <div className="space-y-6 border-b border-slate-800/80 pb-7">
+          <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-6">
+            <div className="space-y-2 max-w-2xl">
+              <div className="text-xs font-semibold text-emerald-400 tracking-wide">
+                Federal Cadastral Land Register · Verified Transfers
+              </div>
+              <h1 className="text-2xl sm:text-4xl font-bold text-white tracking-tight text-balance">
+                Available Verified Lands to Buy
+              </h1>
+              <p className="text-xs sm:text-sm text-slate-400 leading-relaxed">
+                Every parcel card displays an official surveyed land registry snapshot with verified beacon coordinates, approved land use, and transparent USD acquisition pricing.
+              </p>
+            </div>
+
+            <div className="flex items-center divide-x divide-slate-800 text-xs shrink-0">
+              <div className="pr-5">
+                <div className="text-slate-500">Verified Deeds</div>
+                <div className="text-lg font-bold text-white tabular-nums mt-0.5">
+                  {filteredListings.length}
+                </div>
+              </div>
+              <div className="px-5">
+                <div className="text-slate-500">Total Surveyed</div>
+                <div className="text-lg font-bold text-emerald-400 tabular-nums mt-0.5">
+                  {filteredListings.reduce((sum, l) => sum + l.areaSqm, 0).toLocaleString()} m²
+                </div>
+              </div>
+              <div className="pl-5">
+                <div className="text-slate-500">Settlement</div>
+                <div className="text-lg font-bold text-white mt-0.5">Direct Web3</div>
+              </div>
+            </div>
           </div>
 
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 w-full">
-            <div className="relative w-full md:w-72 lg:w-80 shrink-0">
+            <div className="relative w-full md:w-80 shrink-0">
               <Search className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search landmark, state, or ref..."
-                className="w-full pl-9 pr-3 py-2.5 bg-slate-900 border border-slate-700 focus:border-emerald-500 rounded-xl text-xs text-slate-100 placeholder:text-slate-500 outline-none transition-colors"
+                placeholder="Search district, state, landmark, or title ref..."
+                className="w-full pl-10 pr-3.5 py-2.5 bg-slate-900 border border-slate-800 focus:border-emerald-500 rounded-xl text-xs text-slate-100 placeholder:text-slate-500 outline-none transition-colors"
               />
             </div>
 
-            <div className="flex flex-wrap items-center gap-1.5 p-1 bg-slate-900 border border-slate-800 rounded-xl w-full md:w-auto">
+            <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-900 border border-slate-800 rounded-xl w-full md:w-auto">
               {USE_FILTERS.map((use) => {
                 const active = selectedUse === use;
                 return (
@@ -482,9 +510,9 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                     key={use}
                     type="button"
                     onClick={() => setSelectedUse(use)}
-                    className={`px-3 py-2 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 flex-1 sm:flex-initial text-center ${
+                    className={`px-3.5 py-2 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 flex-1 sm:flex-initial text-center ${
                       active
-                        ? 'bg-emerald-600 text-white'
+                        ? 'bg-emerald-600 text-white shadow-xs'
                         : 'text-slate-300 hover:text-white'
                     }`}
                   >
@@ -496,7 +524,7 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
           </div>
         </div>
 
-        {/* 3 Columns x 3 Rows Grid */}
+        {/* 3 Columns Verified Land Registry Snapshot Grid */}
         {filteredListings.length === 0 ? (
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-12 text-center space-y-3">
             <p className="text-sm font-semibold text-white">No verified lands match your filter.</p>
@@ -512,133 +540,134 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
             </button>
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-            {filteredListings.map((listing) => (
-              <article
-                key={listing.id}
-                className="bg-slate-900/95 hover:bg-slate-900 border border-slate-800 hover:border-emerald-500/50 rounded-2xl overflow-hidden flex flex-col justify-between transition-all shadow-lg group"
-              >
-                {/* Top Section: Landmark Photo + Listing Info */}
-                <div>
-                  <div className="relative aspect-[4/3] w-full overflow-hidden bg-gradient-to-br from-slate-800 via-emerald-950/40 to-slate-950">
-                    {listing.imageUrl && !failedImages[listing.id] ? (
-                      <img
-                        src={listing.imageUrl}
-                        alt={`${listing.title} showing ${listing.landmark}`}
-                        referrerPolicy="no-referrer"
-                        onError={() => setFailedImages((prev) => ({ ...prev, [listing.id]: true }))}
-                        className="w-full h-full object-cover object-center group-hover:scale-[1.03] transition-transform duration-300"
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-7">
+            {filteredListings.map((listing) => {
+              const mapCoords =
+                listing.coordinates && listing.coordinates.length >= 3
+                  ? listing.coordinates
+                  : getDefaultPolygonForState(listing.state);
+
+              return (
+                <article
+                  key={listing.id}
+                  className="bg-slate-900 border border-slate-800 hover:border-emerald-500/60 rounded-2xl overflow-hidden flex flex-col justify-between transition-all duration-200 hover:-translate-y-0.5 shadow-xl shadow-black/30 group"
+                >
+                  <div>
+                    {/* Primary Visual Stage: Official Land Registry Snapshot */}
+                    <div className="relative aspect-[4/3] w-full overflow-hidden bg-slate-950 border-b border-slate-800">
+                      <LandRegistrySnapshot
+                        coordinates={mapCoords}
+                        cadastralRef={listing.cadastralRef}
+                        areaSqm={listing.areaSqm}
+                        title={listing.title}
+                        snapshotUrl={listing.imageUrl || undefined}
                       />
-                    ) : listing.isOsmSnapshot && listing.coordinates && listing.coordinates.length > 0 ? (
-                      <OpenStreetMapWidget
-                        coordinates={listing.coordinates}
-                        heightClassName="h-full"
-                        interactive={false}
-                      />
-                    ) : (
-                      <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center gap-2">
-                        <Landmark className="w-8 h-8 text-emerald-400" />
-                        <span className="text-xs font-semibold text-slate-200">{listing.landmark}</span>
-                      </div>
-                    )}
-                    <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-slate-950/90 via-slate-950/20 to-transparent" />
-                    <div className="absolute bottom-3 left-3.5 right-3.5 flex items-end justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-1 text-[11px] font-medium text-emerald-300 truncate">
-                          <Landmark className="w-3 h-3 shrink-0" />
-                          <span className="truncate">{listing.landmark}</span>
-                        </div>
-                      </div>
-                      <span className="text-sm font-extrabold text-white bg-slate-950/85 px-2.5 py-1 rounded-lg border border-slate-700/80 tabular-nums shrink-0">
-                        {formatUsd(listing.priceUsd)}
-                      </span>
-                    </div>
-                  </div>
 
-                  {/* Card Body */}
-                  <div className="p-4 space-y-3">
-                    {/* Clean Unboxed Metadata */}
-                    <div className="flex items-center gap-1.5 text-[11px] font-medium text-slate-400">
-                      <span className="inline-flex items-center gap-1 text-emerald-400 font-semibold">
-                        <BadgeCheck className="w-3.5 h-3.5 shrink-0" />
-                        <span>{listing.verificationBadge}</span>
-                      </span>
-                      <span aria-hidden="true">·</span>
-                      <span>{listing.intendedUse}</span>
+                      <button
+                        type="button"
+                        onClick={() => setFullMapListing(listing)}
+                        className="absolute top-3 right-3 z-10 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-950/90 hover:bg-emerald-700 border border-slate-700/90 hover:border-emerald-400 text-[11px] font-semibold text-white shadow-md transition-colors whitespace-nowrap"
+                        title="Enlarge registered land survey snapshot"
+                      >
+                        <Maximize2 className="w-3 h-3 text-emerald-400" />
+                        <span>Inspect Plan</span>
+                      </button>
                     </div>
 
-                    {/* Title & Location */}
-                    <div>
-                      <h2 className="text-sm font-bold text-white leading-snug line-clamp-1">
-                        {listing.title}
-                      </h2>
-                      <div className="flex items-start gap-1.5 mt-1 text-xs text-slate-400">
-                        <MapPin className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
-                        <span className="line-clamp-1">
-                          {listing.district}, {listing.state}
+                    {/* Card Body */}
+                    <div className="p-5 space-y-4">
+                      {/* Clean Unboxed Verification & Specs Metadata */}
+                      <div className="flex items-center flex-wrap gap-1.5 text-[11px] font-medium text-slate-400">
+                        <span className="inline-flex items-center gap-1 text-emerald-400 font-semibold">
+                          <BadgeCheck className="w-3.5 h-3.5 shrink-0" />
+                          <span>{listing.verificationBadge}</span>
+                        </span>
+                        <span aria-hidden="true">·</span>
+                        <span>{listing.intendedUse}</span>
+                        <span aria-hidden="true">·</span>
+                        <span className="tabular-nums text-slate-300">
+                          {formatPlots(listing.areaSqm)}
                         </span>
                       </div>
-                    </div>
 
-                    {/* Specs Row */}
-                    <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-800/80 text-[11px]">
-                      <div>
-                        <span className="text-slate-500 block">Size</span>
-                        <span className="font-semibold text-slate-200 tabular-nums">
-                          {listing.areaSqm.toLocaleString()} m² ({formatPlots(listing.areaSqm)})
-                        </span>
-                      </div>
-                      <div className="text-right min-w-0">
-                        <span className="text-slate-500 block">Title Ref</span>
-                        <span
-                          className="font-mono font-semibold text-slate-300 block truncate max-w-[130px]"
-                          title={listing.cadastralRef}
-                        >
-                          {listing.cadastralRef}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-1.5 text-[11px] text-slate-400 truncate">
-                        <Building2 className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                        <span className="truncate" title={listing.sellerName}>
-                          Seller: <strong className="text-slate-300 font-medium">{listing.sellerName}</strong>
-                        </span>
-                      </div>
-                      {listing.sellerWallet && (
-                        <div className="flex items-center gap-1.5 text-[10px] text-emerald-400/90 font-mono truncate">
-                          <Wallet className="w-3 h-3 shrink-0" />
-                          <span title={listing.sellerWallet}>
-                            Seller Wallet: {truncateAddress(listing.sellerWallet)}
+                      {/* Title & Location */}
+                      <div className="space-y-1.5">
+                        <h2 className="text-base font-bold text-white leading-snug line-clamp-1 group-hover:text-emerald-300 transition-colors">
+                          {listing.title}
+                        </h2>
+                        <div className="flex items-center gap-1.5 text-xs text-slate-300">
+                          <MapPin className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                          <span className="line-clamp-1">
+                            {listing.district}, {listing.state}
                           </span>
                         </div>
-                      )}
+                        <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                          <Landmark className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                          <span className="line-clamp-1">{listing.landmark}</span>
+                        </div>
+                      </div>
+
+                      {/* Price & Cadastral Ref Baseline */}
+                      <div className="flex items-end justify-between gap-3 pt-3 border-t border-slate-800/90">
+                        <div>
+                          <span className="text-[11px] text-slate-500 block">Asking Price</span>
+                          <span className="text-lg font-extrabold text-emerald-400 tabular-nums tracking-tight">
+                            {formatUsd(listing.priceUsd)}
+                          </span>
+                        </div>
+                        <div className="text-right min-w-0">
+                          <span className="text-[11px] text-slate-500 block">Title Reference</span>
+                          <span
+                            className="font-mono text-xs font-semibold text-slate-200 block truncate max-w-[155px]"
+                            title={listing.cadastralRef}
+                          >
+                            {listing.cadastralRef}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Seller & Receiving Wallet */}
+                      <div className="pt-3 border-t border-slate-800/60 space-y-1">
+                        <div className="flex items-center gap-1.5 text-[11px] text-slate-400 truncate">
+                          <Building2 className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                          <span className="truncate" title={listing.sellerName}>
+                            Seller: <strong className="text-slate-200 font-medium">{listing.sellerName}</strong>
+                          </span>
+                        </div>
+                        {listing.sellerWallet && (
+                          <div className="flex items-center gap-1.5 text-[11px] text-emerald-400/90 font-mono truncate">
+                            <Wallet className="w-3 h-3 shrink-0" />
+                            <span title={listing.sellerWallet}>
+                              Wallet: {truncateAddress(listing.sellerWallet)}
+                            </span>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                {/* Card Actions */}
-                <div className="px-4 pb-4 grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setDeedListing(listing)}
-                    className="px-3 py-2 bg-slate-950 hover:bg-slate-800 border border-slate-700 text-slate-200 text-xs font-semibold rounded-xl transition-colors inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
-                  >
-                    <Layers className="w-3.5 h-3.5 text-sky-400" />
-                    <span>View</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => openBuyModal(listing)}
-                    className="px-3 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition-colors inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
-                  >
-                    <span>Buy Land</span>
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              </article>
-            ))}
+                  {/* Card Actions */}
+                  <div className="px-5 pb-5 grid grid-cols-2 gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => setDeedListing(listing)}
+                      className="px-4 py-2.5 bg-slate-950 hover:bg-slate-800 border border-slate-700 text-slate-200 text-xs font-semibold rounded-xl transition-colors inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
+                    >
+                      <Layers className="w-3.5 h-3.5 text-sky-400" />
+                      <span>View Deed</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openBuyModal(listing)}
+                      className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition-colors inline-flex items-center justify-center gap-1.5 whitespace-nowrap shadow-sm shadow-emerald-950/50"
+                    >
+                      <span>Buy Land</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
           </div>
         )}
       </main>
@@ -660,21 +689,18 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
             </div>
 
             <div className="py-5 space-y-4 text-xs">
-              <div className="w-full h-48 rounded-xl overflow-hidden border border-amber-200 bg-slate-900">
-                {deedListing.imageUrl ? (
-                  <img
-                    src={deedListing.imageUrl}
-                    alt={`${deedListing.title} showing ${deedListing.landmark}`}
-                    referrerPolicy="no-referrer"
-                    className="w-full h-full object-cover object-center"
-                  />
-                ) : deedListing.coordinates && deedListing.coordinates.length > 0 ? (
-                  <OpenStreetMapWidget
-                    coordinates={deedListing.coordinates}
-                    heightClassName="h-full"
-                    interactive={false}
-                  />
-                ) : null}
+              <div className="w-full h-56 sm:h-64 rounded-xl overflow-hidden border border-amber-200 bg-slate-950">
+                <LandRegistrySnapshot
+                  coordinates={
+                    deedListing.coordinates && deedListing.coordinates.length >= 3
+                      ? deedListing.coordinates
+                      : getDefaultPolygonForState(deedListing.state)
+                  }
+                  cadastralRef={deedListing.cadastralRef}
+                  areaSqm={deedListing.areaSqm}
+                  title={deedListing.title}
+                  snapshotUrl={deedListing.imageUrl || undefined}
+                />
               </div>
 
               <p className="leading-relaxed text-slate-800">
@@ -849,18 +875,19 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
             ) : (
               <form onSubmit={handleSubmitPurchase} className="p-6 space-y-4">
                 <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 flex items-center gap-3.5">
-                  {buyListing.imageUrl ? (
-                    <img
-                      src={buyListing.imageUrl}
-                      alt={buyListing.landmark}
-                      referrerPolicy="no-referrer"
-                      className="w-16 h-12 object-cover rounded-lg shrink-0 border border-slate-800"
+                  <div className="w-20 h-14 rounded-lg overflow-hidden shrink-0 border border-slate-800 bg-slate-900">
+                    <LandRegistrySnapshot
+                      coordinates={
+                        buyListing.coordinates && buyListing.coordinates.length >= 3
+                          ? buyListing.coordinates
+                          : getDefaultPolygonForState(buyListing.state)
+                      }
+                      cadastralRef={buyListing.cadastralRef}
+                      areaSqm={buyListing.areaSqm}
+                      snapshotUrl={buyListing.imageUrl || undefined}
+                      compact={true}
                     />
-                  ) : (
-                    <div className="w-16 h-12 rounded-lg shrink-0 border border-slate-800 bg-emerald-950/40 flex items-center justify-center">
-                      <Landmark className="w-5 h-5 text-emerald-400" />
-                    </div>
-                  )}
+                  </div>
                   <div className="flex-1 min-w-0">
                     <div className="text-[11px] text-slate-400 truncate">
                       {buyListing.areaSqm.toLocaleString()} m² · {buyListing.landmark}
@@ -1273,6 +1300,84 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                 </div>
               </form>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* REGISTERED PARCEL SNAPSHOT INSPECTOR MODAL */}
+      {fullMapListing && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-4xl w-full overflow-hidden shadow-2xl flex flex-col max-h-[92vh]">
+            <div className="px-5 py-3.5 border-b border-slate-800 flex items-center justify-between gap-3 bg-slate-950">
+              <div className="min-w-0">
+                <h3 className="text-sm sm:text-base font-bold text-white truncate">
+                  Registered Land Survey Snapshot · {fullMapListing.title}
+                </h3>
+                <p className="text-xs text-slate-400 truncate mt-0.5">
+                  {fullMapListing.district}, {fullMapListing.lga}, {fullMapListing.state} · {fullMapListing.areaSqm.toLocaleString()} m² · Ref {fullMapListing.cadastralRef}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setFullMapListing(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors shrink-0"
+                aria-label="Close snapshot preview"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-4 bg-slate-950/70">
+              <div className="w-full aspect-[4/3] max-h-[58vh] mx-auto rounded-xl overflow-hidden border border-slate-800">
+                <LandRegistrySnapshot
+                  coordinates={
+                    fullMapListing.coordinates && fullMapListing.coordinates.length >= 3
+                      ? fullMapListing.coordinates
+                      : getDefaultPolygonForState(fullMapListing.state)
+                  }
+                  cadastralRef={fullMapListing.cadastralRef}
+                  areaSqm={fullMapListing.areaSqm}
+                  title={fullMapListing.title}
+                  snapshotUrl={fullMapListing.imageUrl || undefined}
+                />
+              </div>
+            </div>
+
+            <div className="px-5 py-3.5 border-t border-slate-800 bg-slate-950 flex flex-wrap items-center justify-between gap-3">
+              <div className="text-xs text-slate-300">
+                Asking Price:{' '}
+                <strong className="text-emerald-400 text-sm tabular-nums">
+                  {formatUsd(fullMapListing.priceUsd)}
+                </strong>{' '}
+                · Surveyed boundary with beacon monuments (PB1–PB4)
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const target = fullMapListing;
+                    setFullMapListing(null);
+                    setDeedListing(target);
+                  }}
+                  className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-xl inline-flex items-center gap-1.5"
+                >
+                  <Layers className="w-3.5 h-3.5 text-sky-400" />
+                  <span>View Deed</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const target = fullMapListing;
+                    setFullMapListing(null);
+                    openBuyModal(target);
+                  }}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl inline-flex items-center gap-1.5"
+                >
+                  <span>Buy Land</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
