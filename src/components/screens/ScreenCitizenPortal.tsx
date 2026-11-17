@@ -37,11 +37,13 @@ import {
   validateSellerWallet
 } from '../../lib/web3Wallet';
 import { OpenStreetMapWidget } from '../maps/OpenStreetMapWidget';
+import { LandRegistrySnapshot } from '../maps/LandRegistrySnapshot';
+import { describeParcelGeography } from '../../lib/geoDescription';
 
 interface Props {
   parcels: ParcelRecord[];
   currentUser?: AuthUser | null;
-  onNewParcelSubmit: (newParcel: ParcelRecord) => void;
+  onNewParcelSubmit: (newParcel: ParcelRecord) => Promise<ParcelRecord> | void;
   onSelectParcel: (parcel: ParcelRecord) => void;
   selectedParcelId?: string;
   onSelectParcelId?: (id: string) => void;
@@ -166,10 +168,39 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
     [landDemarcation]
   );
 
+  const liveAreaEstimate = useMemo(() => {
+    if (!livePolygon.valid || livePolygon.beacons.length < 3) return 1200;
+    let sum = 0;
+    const b = livePolygon.beacons;
+    for (let i = 0; i < b.length; i++) {
+      const j = (i + 1) % b.length;
+      sum += b[i].easting * b[j].northing - b[j].easting * b[i].northing;
+    }
+    return Number((Math.abs(sum) / 2 || 1200).toFixed(1));
+  }, [livePolygon]);
+
+  const liveGeoInfo = useMemo(
+    () =>
+      describeParcelGeography({
+        state,
+        lga,
+        district: landLocation,
+        coordinates: livePolygon.valid ? livePolygon.coordinates : [],
+        areaSqm: liveAreaEstimate
+      }),
+    [state, lga, landLocation, livePolygon, liveAreaEstimate]
+  );
+
   const walletCheck = useMemo(
     () => validateSellerWallet(sellerWallet),
     [sellerWallet]
   );
+
+  useEffect(() => {
+    if (!currentUser) return;
+    setApplicantName((prev) => prev || currentUser.fullName || '');
+    setApplicantNin((prev) => prev || currentUser.credentialId || '');
+  }, [currentUser]);
 
   const recenterMapForRegion = async (
     targetLoc: string,
@@ -440,10 +471,10 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
       beacons: parsedPolygon.beacons
     };
 
-    onNewParcelSubmit(newParcel);
-    onSelectParcelId?.(newParcel.id);
+    const persistedParcel = (await onNewParcelSubmit(newParcel)) || newParcel;
+    onSelectParcelId?.(persistedParcel.id);
     setIsSubmitting(false);
-    setSubmittedParcel(newParcel);
+    setSubmittedParcel(persistedParcel);
   };
 
   const handleResetForm = () => {
@@ -469,7 +500,7 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
         className="pointer-events-none absolute inset-x-0 top-0 h-80 bg-[radial-gradient(ellipse_at_top,rgba(16,185,129,0.10),transparent_70%)]"
       />
 
-      <div className="relative max-w-3xl mx-auto px-4 sm:px-6 py-10 sm:py-14 space-y-8">
+      <div className="relative max-w-3xl mx-auto px-3.5 sm:px-6 py-7 sm:py-12 space-y-6 sm:space-y-8">
         {/* Centered Header */}
         <div className="text-center space-y-2.5">
           <div className="inline-flex items-center gap-2 text-xs font-semibold tracking-wider uppercase text-emerald-400">
@@ -486,14 +517,14 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
 
         {/* Success Receipt Card OR Centered Registration Form */}
         {submittedParcel ? (
-          <div className="bg-slate-900 border border-amber-500/40 rounded-2xl p-6 sm:p-8 shadow-2xl space-y-6">
-            <div className="flex items-start gap-4">
-              <div className="w-11 h-11 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 flex items-center justify-center shrink-0">
-                <ShieldCheck className="w-6 h-6" />
+          <div className="bg-slate-900 border border-amber-500/40 rounded-2xl p-4 sm:p-8 shadow-2xl space-y-5 sm:space-y-6">
+            <div className="flex items-start gap-3 sm:gap-4">
+              <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 flex items-center justify-center shrink-0">
+                <ShieldCheck className="w-5 h-5 sm:w-6 sm:h-6" />
               </div>
-              <div className="space-y-1">
+              <div className="space-y-1 min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
-                  <h2 className="text-lg font-bold text-white">Submitted — Waiting for Admin Approval</h2>
+                  <h2 className="text-base sm:text-lg font-bold text-white">Submitted — Waiting for Admin Approval</h2>
                   <span className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-500/15 border border-amber-500/30 text-amber-300">
                     Waiting for admin approval
                   </span>
@@ -504,26 +535,29 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
               </div>
             </div>
 
-            {submittedParcel.mapSnapshotUrl && (
-              <div className="rounded-xl overflow-hidden border border-amber-500/30 bg-slate-950">
-                <img
-                  src={submittedParcel.mapSnapshotUrl}
-                  alt={`OpenStreetMap snapshot of ${submittedParcel.district}, ${submittedParcel.state}`}
-                  className="w-full h-56 object-cover"
+            <div className="rounded-xl overflow-hidden border border-amber-500/30 bg-slate-950">
+              <div className="w-full h-52 sm:h-60">
+                <LandRegistrySnapshot
+                  coordinates={submittedParcel.coordinates}
+                  cadastralRef={submittedParcel.cadastralRef}
+                  areaSqm={submittedParcel.areaSqm}
+                  stateName={submittedParcel.state}
+                  title={submittedParcel.district}
+                  snapshotUrl={submittedParcel.mapSnapshotUrl || undefined}
                 />
-                <div className="px-4 py-2 bg-slate-950 border-t border-slate-800 flex items-center justify-between text-[11px] text-slate-400">
-                  <span className="inline-flex items-center gap-1.5 text-emerald-400 font-medium">
-                    <MapIcon className="w-3.5 h-3.5" />
-                    <span>Captured OpenStreetMap Parcel Snapshot</span>
-                  </span>
-                  <span className="font-mono">
-                    {submittedParcel.lga}, {submittedParcel.state}
-                  </span>
-                </div>
               </div>
-            )}
+              <div className="px-3.5 sm:px-4 py-2.5 bg-slate-950 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400">
+                <span className="inline-flex items-center gap-1.5 text-emerald-400 font-medium">
+                  <MapIcon className="w-3.5 h-3.5 shrink-0" />
+                  <span>Captured Land Registry Map Snapshot</span>
+                </span>
+                <span className="font-mono truncate">
+                  {submittedParcel.lga}, {submittedParcel.state}
+                </span>
+              </div>
+            </div>
 
-            <div className="bg-slate-950 border border-slate-800 rounded-xl p-5 grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+            <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 sm:p-5 grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
               <div>
                 <span className="text-slate-500 block">Cadastral Reference</span>
                 <span className="font-mono font-bold text-emerald-400 text-sm mt-0.5 block">
@@ -533,7 +567,7 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
               <div>
                 <span className="text-slate-500 block">Verification Status</span>
                 <span className="inline-flex items-center gap-1.5 font-semibold text-amber-300 mt-0.5">
-                  Pending Admin Verification
+                  Waiting for admin approval
                 </span>
               </div>
               <div className="sm:col-span-2">
@@ -559,6 +593,18 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
                 </span>
               </div>
               <div className="sm:col-span-2">
+                <span className="text-slate-500 block">Geographical Area &amp; Geometry Direction</span>
+                <span className="text-slate-200 mt-0.5 block leading-relaxed">
+                  {describeParcelGeography({
+                    state: submittedParcel.state,
+                    lga: submittedParcel.lga,
+                    district: submittedParcel.district,
+                    coordinates: submittedParcel.coordinates,
+                    areaSqm: submittedParcel.areaSqm
+                  }).fullDescription}
+                </span>
+              </div>
+              <div className="sm:col-span-2">
                 <span className="text-slate-500 block">Seller&apos;s Receiving Wallet</span>
                 <span className="font-mono text-emerald-300 mt-0.5 block break-all">
                   {submittedParcel.sellerWallet}
@@ -572,21 +618,21 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
               <button
                 type="button"
                 onClick={handleResetForm}
-                className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-xl transition-colors"
+                className="w-full sm:w-auto px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-xl transition-colors text-center"
               >
                 Register Another Land
               </button>
 
-              <div className="flex flex-wrap items-center gap-2.5">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 w-full sm:w-auto">
                 {onNextStep && (
                   <button
                     type="button"
                     onClick={() => onNextStep(submittedParcel.id)}
-                    className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-semibold rounded-xl transition-colors"
+                    className="w-full sm:w-auto px-4 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-semibold rounded-xl transition-colors text-center"
                   >
                     Inspect GIS Map
                   </button>
@@ -596,7 +642,7 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
                   <button
                     type="button"
                     onClick={onOpenLands}
-                    className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition-colors inline-flex items-center gap-2 shadow-lg"
+                    className="w-full sm:w-auto px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition-colors inline-flex items-center justify-center gap-2 shadow-lg"
                   >
                     <span>Browse Access Lands</span>
                     <ChevronRight className="w-4 h-4" />
@@ -611,7 +657,7 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
             className="bg-slate-900/95 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden"
           >
             {/* Section 1: Applicant & Jurisdiction */}
-            <div className="p-6 sm:p-8 space-y-5">
+            <div className="p-4 sm:p-8 space-y-5">
               <div className="flex items-center gap-3 pb-4 border-b border-slate-800">
                 <div className="w-8 h-8 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 flex items-center justify-center shrink-0">
                   <MapPin className="w-4 h-4" />
@@ -795,7 +841,7 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
             </div>
 
             {/* Section 2: Survey Beacon Coordinate Array (WGS84 & UTM) */}
-            <div className="p-6 sm:p-8 border-t border-slate-800 space-y-5 bg-slate-900/50">
+            <div className="p-4 sm:p-8 border-t border-slate-800 space-y-5 bg-slate-900/50">
               <div className="flex items-center gap-3 pb-4 border-b border-slate-800">
                 <div className="w-8 h-8 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 flex items-center justify-center shrink-0">
                   <Compass className="w-4 h-4" />
@@ -805,7 +851,7 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
                     2. Survey Beacon Coordinate Array (WGS84 &amp; UTM)
                   </h2>
                   <p className="text-[11px] text-slate-400">
-                    Land demarcation, parcel location, and official survey plan upload
+                    Land demarcation, parcel location, geometry direction, and official survey plan upload
                   </p>
                 </div>
               </div>
@@ -875,24 +921,24 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
                   )}
                 </div>
 
-                {/* Interactive OpenStreetMap Parcel Preview & Live Access Lands Screenshot Preview */}
+                {/* Interactive Map Address Preview & Live Geometry Direction / Geographical Area */}
                 <div className="space-y-3 sm:col-span-2">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <span className="font-medium text-slate-300 inline-flex items-center gap-1.5">
                       <MapIcon className="w-3.5 h-3.5 text-emerald-400" />
-                      <span>Exact Landmark Preview on OpenStreetMap</span>
+                      <span>Exact Map Address &amp; Parcel Pin</span>
                     </span>
                     <span className="text-[11px] text-slate-400">
-                      Click anywhere on map to adjust exact plot pin
+                      Tap anywhere on the map to reposition plot pin
                     </span>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-stretch">
-                    <div className="md:col-span-7 flex flex-col space-y-1.5">
+                    <div className="md:col-span-7 flex flex-col space-y-1.5 min-w-0">
                       <OpenStreetMapWidget
                         coordinates={livePolygon.valid ? livePolygon.coordinates : []}
                         centerFallback={getStateCenter(state)}
-                        heightClassName="h-64"
+                        heightClassName="h-56 sm:h-64"
                         onPickLocation={handlePickLocationOnMap}
                         landmarkLabel={landLocation.trim() || `${lga}, ${state}`}
                       />
@@ -901,43 +947,95 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
                       </p>
                     </div>
 
-                    <div className="md:col-span-5 bg-slate-950 border border-slate-800 rounded-xl p-3 flex flex-col justify-between space-y-2.5">
+                    <div className="md:col-span-5 bg-slate-950 border border-slate-800 rounded-xl p-3 flex flex-col justify-between space-y-2.5 min-w-0">
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-[11px] font-semibold text-slate-200 inline-flex items-center gap-1.5">
-                          <Camera className="w-3.5 h-3.5 text-emerald-400" />
-                          <span>Access Lands Map Preview</span>
+                          <Camera className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                          <span>Map Address Snapshot</span>
                         </span>
                         <button
                           type="button"
                           onClick={handleRefreshSnapshotPreview}
                           disabled={isGeneratingPreview}
-                          className="text-[10px] font-medium text-emerald-400 hover:text-emerald-300 inline-flex items-center gap-1"
+                          className="text-[10px] font-medium text-emerald-400 hover:text-emerald-300 inline-flex items-center gap-1 shrink-0"
                         >
                           <RefreshCw className={`w-3 h-3 ${isGeneratingPreview ? 'animate-spin' : ''}`} />
                           <span>Refresh</span>
                         </button>
                       </div>
 
-                      <div className="relative flex-1 min-h-[168px] rounded-lg overflow-hidden border border-slate-800 bg-slate-900 flex items-center justify-center">
+                      <div className="relative flex-1 min-h-[168px] rounded-lg overflow-hidden border border-slate-800 bg-slate-900">
                         {previewSnapshotUrl ? (
                           <img
                             src={previewSnapshotUrl}
-                            alt={`OpenStreetMap preview for ${landLocation || lga}`}
+                            alt={`Map address preview for ${landLocation || lga}`}
                             className="w-full h-full object-cover"
+                            onError={() => setPreviewSnapshotUrl('')}
                           />
                         ) : (
-                          <span className="text-[11px] text-slate-500 px-4 text-center">
-                            {isGeneratingPreview
-                              ? 'Capturing OpenStreetMap snapshot...'
-                              : 'Enter a location to preview OpenStreetMap snapshot'}
-                          </span>
+                          <LandRegistrySnapshot
+                            coordinates={livePolygon.valid ? livePolygon.coordinates : []}
+                            cadastralRef={surveyPlanRef.trim() || 'LIVE SURVEY'}
+                            areaSqm={liveAreaEstimate}
+                            stateName={state}
+                            title={landLocation.trim() || lga}
+                          />
                         )}
                       </div>
 
                       <div className="text-[10px] text-slate-400 leading-snug">
-                        This exact OpenStreetMap screenshot will be saved to <strong className="text-slate-200">Access Lands</strong> when you submit.
+                        This verified map snapshot is saved with your parcel record on <strong className="text-slate-200">Access Lands</strong> across all devices.
                       </div>
                     </div>
+                  </div>
+
+                  {/* Dynamic Geometry Direction & Geographical Area Breakdown */}
+                  <div className="bg-slate-950/90 border border-emerald-500/30 rounded-xl p-3.5 sm:p-4 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800/80">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-400 inline-flex items-center gap-1.5">
+                        <Compass className="w-3.5 h-3.5" />
+                        <span>Geometry Direction &amp; Geographical Area</span>
+                      </span>
+                      <span className="font-mono text-[10px] text-slate-400">
+                        {liveGeoInfo.centroid.lat.toFixed(5)}°N, {liveGeoInfo.centroid.lng.toFixed(5)}°E
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-[11px]">
+                      <div className="space-y-1 bg-slate-900/70 border border-slate-800 rounded-lg p-2.5">
+                        <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-400">
+                          Geographical Area
+                        </div>
+                        <div className="font-semibold text-white">
+                          {liveGeoInfo.geopoliticalZone} · {lga}, {state}
+                        </div>
+                        <div className="text-slate-300 leading-snug">
+                          {liveGeoInfo.terrainProfile}
+                        </div>
+                        <div className="text-emerald-400 font-mono text-[10px] pt-0.5">
+                          {liveGeoInfo.relativePosition}
+                        </div>
+                      </div>
+
+                      <div className="space-y-1 bg-slate-900/70 border border-slate-800 rounded-lg p-2.5">
+                        <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-400">
+                          Geometry Direction &amp; Span
+                        </div>
+                        <div className="font-semibold text-white">
+                          {liveGeoInfo.primaryOrientation}
+                        </div>
+                        <div className="text-slate-300 font-mono text-[10px]">
+                          Span: {liveGeoInfo.dimensionsLabel} · ~{liveAreaEstimate.toLocaleString()} m²
+                        </div>
+                        <div className="text-slate-400 font-mono text-[10px] leading-snug break-words">
+                          {liveGeoInfo.edgeSummary}
+                        </div>
+                      </div>
+                    </div>
+
+                    <p className="text-[11px] text-slate-300 leading-relaxed">
+                      {liveGeoInfo.fullDescription}
+                    </p>
                   </div>
                 </div>
 
@@ -1105,7 +1203,7 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
             </div>
 
             {/* Submit Bar */}
-            <div className="px-6 sm:px-8 py-5 border-t border-slate-800 bg-slate-950/60 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="px-4 sm:px-8 py-5 border-t border-slate-800 bg-slate-950/60 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               {formError ? (
                 <div className="text-xs text-red-400 font-medium">{formError}</div>
               ) : (
@@ -1117,7 +1215,7 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
               <button
                 type="submit"
                 disabled={isSubmitting}
-                className="px-6 py-3 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white font-bold text-xs rounded-xl shadow-lg transition-all inline-flex items-center justify-center gap-2 whitespace-nowrap shrink-0"
+                className="w-full sm:w-auto px-6 py-3 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white font-bold text-xs rounded-xl shadow-lg transition-all inline-flex items-center justify-center gap-2 whitespace-nowrap shrink-0"
               >
                 {isSubmitting ? (
                   <>

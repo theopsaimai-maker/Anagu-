@@ -21,12 +21,14 @@ import {
   ShieldCheck,
   Loader2,
   Maximize2,
-  Clock
+  Clock,
+  Compass
 } from 'lucide-react';
 import { AuthUser, ParcelRecord, VerifiedLandListing } from '../../types/anagu';
 import { VERIFIED_LANDS_FOR_SALE, getDefaultPolygonForState } from '../../data/verifiedLands';
 import { ASSET_IMAGES } from '../../data/mockData';
 import { apiCreateInquiry } from '../../lib/api';
+import { describeParcelGeography } from '../../lib/geoDescription';
 import { LandRegistrySnapshot } from '../maps/LandRegistrySnapshot';
 import {
   ConnectedWalletResult,
@@ -428,13 +430,13 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
   return (
     <div className="min-h-screen w-full bg-[#070b12] text-slate-100 flex flex-col font-sans selection:bg-emerald-500/30 selection:text-emerald-300">
       {/* Top Bar */}
-      <header className="sticky top-0 z-40 bg-[#070b12]/95 backdrop-blur-md border-b border-slate-800 px-6 lg:px-10 h-16 flex items-center justify-between gap-4 shrink-0">
+      <header className="sticky top-0 z-40 bg-[#070b12]/95 backdrop-blur-md border-b border-slate-800 px-3 sm:px-6 lg:px-10 h-16 flex items-center justify-between gap-2 sm:gap-4 shrink-0">
         <button
           type="button"
           onClick={onBackToLanding}
-          className="flex items-center gap-3 text-left group shrink-0"
+          className="flex items-center gap-2.5 sm:gap-3 text-left group min-w-0"
         >
-          <div className="w-9 h-9 rounded-full p-0.5 bg-gradient-to-tr from-emerald-500 via-amber-400 to-emerald-400 shadow-sm">
+          <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-full p-0.5 bg-gradient-to-tr from-emerald-500 via-amber-400 to-emerald-400 shadow-sm shrink-0">
             <img
               src={ASSET_IMAGES.logoAvatar}
               alt="Anagu Emblem"
@@ -442,42 +444,43 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
               className="w-full h-full object-cover rounded-full bg-slate-900"
             />
           </div>
-          <div>
-            <div className="text-base font-bold text-white leading-none group-hover:text-emerald-300 transition-colors whitespace-nowrap">
+          <div className="min-w-0">
+            <div className="text-sm sm:text-base font-bold text-white leading-none group-hover:text-emerald-300 transition-colors truncate">
               Anagu Land Marketplace
             </div>
-            <div className="text-[11px] text-emerald-400 mt-0.5 whitespace-nowrap">
+            <div className="hidden sm:block text-[11px] text-emerald-400 mt-0.5 truncate">
               Verified Title Deeds Available for Purchase
             </div>
           </div>
         </button>
 
-        <div className="flex items-center gap-2.5 shrink-0">
+        <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
           <button
             type="button"
             onClick={onOpenRegister}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold text-white transition-colors whitespace-nowrap shrink-0"
+            className="flex items-center gap-1.5 px-2.5 sm:px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold text-white transition-colors whitespace-nowrap shrink-0"
           >
-            <FilePlus2 className="w-3.5 h-3.5" />
-            <span>Register Lands</span>
+            <FilePlus2 className="w-3.5 h-3.5 shrink-0" />
+            <span className="sm:hidden">Register</span>
+            <span className="hidden sm:inline">Register Lands</span>
           </button>
 
           <button
             type="button"
             onClick={onBackToLanding}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-emerald-950/60 border border-slate-700 hover:border-emerald-500/60 text-xs font-medium text-slate-200 hover:text-emerald-300 transition-colors whitespace-nowrap shrink-0"
+            className="flex items-center gap-1.5 px-2.5 sm:px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-emerald-950/60 border border-slate-700 hover:border-emerald-500/60 text-xs font-medium text-slate-200 hover:text-emerald-300 transition-colors whitespace-nowrap shrink-0"
           >
-            <Home className="w-3.5 h-3.5 text-emerald-400" />
+            <Home className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
             <span>Home</span>
           </button>
         </div>
       </header>
 
       {/* Main Content */}
-      <main className="w-full max-w-[1280px] mx-auto px-4 sm:px-6 lg:px-10 py-8 sm:py-10 space-y-8">
+      <main className="w-full max-w-[1280px] mx-auto px-3.5 sm:px-6 lg:px-10 py-6 sm:py-10 space-y-6 sm:space-y-8">
         {/* Heading, Registry Summary & Filter Controls */}
-        <div className="space-y-6 border-b border-slate-800/80 pb-7">
-          <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-6">
+        <div className="space-y-5 sm:space-y-6 border-b border-slate-800/80 pb-6 sm:pb-7">
+          <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-5 sm:gap-6">
             <div className="space-y-2 max-w-2xl">
               <div className="text-xs font-semibold text-emerald-400 tracking-wide">
                 Federal Cadastral Land Register · Verified Transfers
@@ -486,26 +489,26 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                 Available Verified Lands to Buy
               </h1>
               <p className="text-xs sm:text-sm text-slate-400 leading-relaxed">
-                Every parcel card displays an official surveyed land registry snapshot with verified beacon coordinates, approved land use, and transparent USD acquisition pricing.
+                Every parcel card displays an official surveyed land registry snapshot with directional bearing geometry, geographical area context, approved land use, and transparent USD acquisition pricing.
               </p>
             </div>
 
-            <div className="flex items-center divide-x divide-slate-800 text-xs shrink-0">
-              <div className="pr-5">
-                <div className="text-slate-500">Verified Deeds</div>
-                <div className="text-lg font-bold text-white tabular-nums mt-0.5">
+            <div className="grid grid-cols-3 divide-x divide-slate-800 text-xs w-full lg:w-auto shrink-0 pt-1 lg:pt-0">
+              <div className="pr-2 sm:pr-5">
+                <div className="text-[11px] sm:text-xs text-slate-500">Verified Deeds</div>
+                <div className="text-base sm:text-lg font-bold text-white tabular-nums mt-0.5">
                   {filteredListings.length}
                 </div>
               </div>
-              <div className="px-5">
-                <div className="text-slate-500">Total Surveyed</div>
-                <div className="text-lg font-bold text-emerald-400 tabular-nums mt-0.5">
+              <div className="px-2 sm:px-5">
+                <div className="text-[11px] sm:text-xs text-slate-500">Total Surveyed</div>
+                <div className="text-base sm:text-lg font-bold text-emerald-400 tabular-nums mt-0.5 truncate">
                   {filteredListings.reduce((sum, l) => sum + l.areaSqm, 0).toLocaleString()} m²
                 </div>
               </div>
-              <div className="pl-5">
-                <div className="text-slate-500">Settlement</div>
-                <div className="text-lg font-bold text-white mt-0.5">Direct Web3</div>
+              <div className="pl-2 sm:pl-5">
+                <div className="text-[11px] sm:text-xs text-slate-500">Settlement</div>
+                <div className="text-base sm:text-lg font-bold text-white mt-0.5">Direct Web3</div>
               </div>
             </div>
           </div>
@@ -560,13 +563,20 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
             </button>
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-7">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 sm:gap-7">
             {filteredListings.map((listing) => {
               const isWaitingApproval = listing.approvalStatus === 'waiting_admin_approval';
               const mapCoords =
                 listing.coordinates && listing.coordinates.length >= 3
                   ? listing.coordinates
                   : getDefaultPolygonForState(listing.state);
+              const geoInfo = describeParcelGeography({
+                state: listing.state,
+                lga: listing.lga,
+                district: listing.district,
+                coordinates: mapCoords,
+                areaSqm: listing.areaSqm
+              });
 
               return (
                 <article
@@ -584,6 +594,7 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                         coordinates={mapCoords}
                         cadastralRef={listing.cadastralRef}
                         areaSqm={listing.areaSqm}
+                        stateName={listing.state}
                         title={listing.title}
                         snapshotUrl={listing.imageUrl || undefined}
                       />
@@ -600,7 +611,7 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                     </div>
 
                     {/* Card Body */}
-                    <div className="p-5 space-y-4">
+                    <div className="p-4 sm:p-5 space-y-3.5">
                       {/* Clean Unboxed Approval Status & Specs Metadata */}
                       <div className="flex items-center flex-wrap gap-1.5 text-[11px] font-medium text-slate-400">
                         {isWaitingApproval ? (
@@ -635,7 +646,25 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                         </div>
                         <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
                           <Landmark className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                          <span className="line-clamp-1">{listing.landmark}</span>
+                          <span className="line-clamp-1">
+                            {geoInfo.geopoliticalZone} · {geoInfo.relativePosition}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Geometry Direction & Geographical Area Context */}
+                      <div className="bg-slate-950/75 border border-slate-800/90 rounded-xl p-2.5 space-y-1 text-[11px]">
+                        <div className="flex items-center gap-1.5 text-emerald-300 font-medium">
+                          <Compass className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                          <span className="truncate" title={geoInfo.primaryOrientation}>
+                            {geoInfo.primaryOrientation}
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-slate-400 leading-snug line-clamp-1">
+                          {geoInfo.terrainProfile}
+                        </div>
+                        <div className="text-[10px] font-mono text-slate-300 tabular-nums">
+                          Span: {geoInfo.dimensionsLabel}
                         </div>
                       </div>
 
@@ -650,7 +679,7 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                         <div className="text-right min-w-0">
                           <span className="text-[11px] text-slate-500 block">Title Reference</span>
                           <span
-                            className="font-mono text-xs font-semibold text-slate-200 block truncate max-w-[155px]"
+                            className="font-mono text-xs font-semibold text-slate-200 block truncate max-w-[140px] sm:max-w-[155px]"
                             title={listing.cadastralRef}
                           >
                             {listing.cadastralRef}
@@ -679,13 +708,13 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                   </div>
 
                   {/* Card Actions */}
-                  <div className="px-5 pb-5 grid grid-cols-2 gap-2.5">
+                  <div className="px-4 sm:px-5 pb-4 sm:pb-5 grid grid-cols-2 gap-2.5">
                     <button
                       type="button"
                       onClick={() => setDeedListing(listing)}
-                      className="px-4 py-2.5 bg-slate-950 hover:bg-slate-800 border border-slate-700 text-slate-200 text-xs font-semibold rounded-xl transition-colors inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
+                      className="px-3 sm:px-4 py-2.5 bg-slate-950 hover:bg-slate-800 border border-slate-700 text-slate-200 text-xs font-semibold rounded-xl transition-colors inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
                     >
-                      <Layers className="w-3.5 h-3.5 text-sky-400" />
+                      <Layers className="w-3.5 h-3.5 text-sky-400 shrink-0" />
                       <span>View Deed</span>
                     </button>
                     {isWaitingApproval ? (
@@ -693,19 +722,19 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                         type="button"
                         disabled
                         title="Waiting for administrator verification before purchase"
-                        className="px-3 py-2.5 bg-amber-950/50 border border-amber-500/30 text-amber-300 text-[11px] font-semibold rounded-xl inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-not-allowed"
+                        className="px-2.5 sm:px-3 py-2.5 bg-amber-950/50 border border-amber-500/30 text-amber-300 text-[11px] font-semibold rounded-xl inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-not-allowed"
                       >
                         <Clock className="w-3.5 h-3.5 shrink-0" />
-                        <span>Pending Approval</span>
+                        <span className="truncate">Pending Approval</span>
                       </button>
                     ) : (
                       <button
                         type="button"
                         onClick={() => openBuyModal(listing)}
-                        className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition-colors inline-flex items-center justify-center gap-1.5 whitespace-nowrap shadow-sm shadow-emerald-950/50"
+                        className="px-3 sm:px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition-colors inline-flex items-center justify-center gap-1.5 whitespace-nowrap shadow-sm shadow-emerald-950/50"
                       >
                         <span>Buy Land</span>
-                        <ArrowRight className="w-3.5 h-3.5" />
+                        <ArrowRight className="w-3.5 h-3.5 shrink-0" />
                       </button>
                     )}
                   </div>
@@ -717,164 +746,184 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
       </main>
 
       {/* VERIFIED CERTIFICATE OF OCCUPANCY MODAL */}
-      {deedListing && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs overflow-y-auto flex items-start sm:items-center justify-center p-4">
-          <div className="bg-amber-50 text-slate-900 rounded-2xl max-w-2xl w-full p-6 sm:p-8 border-4 border-amber-200 shadow-2xl relative max-h-[92vh] overflow-y-auto my-auto">
-            <div className="text-center pb-5 border-b-2 border-amber-200">
-              <div className="text-xs uppercase tracking-widest text-amber-900 font-bold">
-                Federal Republic of Nigeria
-              </div>
-              <h2 className="text-xl font-serif font-bold text-slate-900 mt-1">
-                {deedListing.approvalStatus === 'waiting_admin_approval'
-                  ? 'LAND APPLICATION RECORD (WAITING FOR ADMIN APPROVAL)'
-                  : 'CERTIFICATE OF OCCUPANCY (APPROVED FOR TRANSFER)'}
-              </h2>
-              <div className="text-xs font-mono text-amber-800 mt-1">
-                Issued pursuant to Land Use Act (1978) · Title Ref #{deedListing.cadastralRef}
-              </div>
-            </div>
-
-            <div className="py-5 space-y-4 text-xs">
-              <div className="w-full h-56 sm:h-64 rounded-xl overflow-hidden border border-amber-200 bg-slate-950">
-                <LandRegistrySnapshot
-                  coordinates={
-                    deedListing.coordinates && deedListing.coordinates.length >= 3
-                      ? deedListing.coordinates
-                      : getDefaultPolygonForState(deedListing.state)
-                  }
-                  cadastralRef={deedListing.cadastralRef}
-                  areaSqm={deedListing.areaSqm}
-                  title={deedListing.title}
-                  snapshotUrl={deedListing.imageUrl || undefined}
-                />
+      {deedListing && (() => {
+        const deedCoords =
+          deedListing.coordinates && deedListing.coordinates.length >= 3
+            ? deedListing.coordinates
+            : getDefaultPolygonForState(deedListing.state);
+        const deedGeo = describeParcelGeography({
+          state: deedListing.state,
+          lga: deedListing.lga,
+          district: deedListing.district,
+          coordinates: deedCoords,
+          areaSqm: deedListing.areaSqm
+        });
+        return (
+          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs overflow-y-auto flex items-start sm:items-center justify-center p-2.5 sm:p-4">
+            <div className="bg-amber-50 text-slate-900 rounded-2xl max-w-2xl w-full p-4 sm:p-8 border-4 border-amber-200 shadow-2xl relative max-h-[92vh] overflow-y-auto my-auto">
+              <div className="text-center pb-4 sm:pb-5 border-b-2 border-amber-200">
+                <div className="text-[11px] sm:text-xs uppercase tracking-widest text-amber-900 font-bold">
+                  Federal Republic of Nigeria
+                </div>
+                <h2 className="text-base sm:text-xl font-serif font-bold text-slate-900 mt-1">
+                  {deedListing.approvalStatus === 'waiting_admin_approval'
+                    ? 'LAND APPLICATION RECORD (WAITING FOR ADMIN APPROVAL)'
+                    : 'CERTIFICATE OF OCCUPANCY (APPROVED FOR TRANSFER)'}
+                </h2>
+                <div className="text-[11px] sm:text-xs font-mono text-amber-800 mt-1">
+                  Issued pursuant to Land Use Act (1978) · Title Ref #{deedListing.cadastralRef}
+                </div>
               </div>
 
-              <p className="leading-relaxed text-slate-800">
-                THIS IS TO CERTIFY that{' '}
-                <strong className="font-bold text-slate-950 uppercase">{deedListing.sellerName}</strong>{' '}
-                holds an unencumbered statutory Certificate of Occupancy over{' '}
-                <strong className="font-semibold">{deedListing.title}</strong> ({deedListing.landmark}) situated at{' '}
-                <strong className="font-semibold">
-                  {deedListing.district}, {deedListing.lga}, {deedListing.state}
-                </strong>{' '}
-                measuring{' '}
-                <strong className="font-bold text-slate-900">
-                  {deedListing.areaSqm.toLocaleString()} square meters
-                </strong>{' '}
-                at a verified asking price of{' '}
-                <strong className="font-bold text-emerald-800 tabular-nums">
-                  {formatUsd(deedListing.priceUsd)} USD
-                </strong>
-                .
-              </p>
+              <div className="py-4 sm:py-5 space-y-4 text-xs">
+                <div className="w-full h-48 sm:h-64 rounded-xl overflow-hidden border border-amber-200 bg-slate-950">
+                  <LandRegistrySnapshot
+                    coordinates={deedCoords}
+                    cadastralRef={deedListing.cadastralRef}
+                    areaSqm={deedListing.areaSqm}
+                    stateName={deedListing.state}
+                    title={deedListing.title}
+                    snapshotUrl={deedListing.imageUrl || undefined}
+                  />
+                </div>
 
-              <div className="bg-white/80 p-4 rounded-xl border border-amber-200/80 grid grid-cols-2 gap-3 text-[11px]">
-                <div>
-                  <span className="text-slate-500 block">Cadastral Ref:</span>
-                  <div className="font-bold text-slate-900">{deedListing.cadastralRef}</div>
+                <p className="leading-relaxed text-slate-800">
+                  THIS IS TO CERTIFY that{' '}
+                  <strong className="font-bold text-slate-950 uppercase">{deedListing.sellerName}</strong>{' '}
+                  holds an unencumbered statutory Certificate of Occupancy over{' '}
+                  <strong className="font-semibold">{deedListing.title}</strong> ({deedListing.landmark}) situated at{' '}
+                  <strong className="font-semibold">
+                    {deedListing.district}, {deedListing.lga}, {deedListing.state}
+                  </strong>{' '}
+                  measuring{' '}
+                  <strong className="font-bold text-slate-900">
+                    {deedListing.areaSqm.toLocaleString()} square meters
+                  </strong>{' '}
+                  at a verified asking price of{' '}
+                  <strong className="font-bold text-emerald-800 tabular-nums">
+                    {formatUsd(deedListing.priceUsd)} USD
+                  </strong>
+                  .
+                </p>
+
+                <div className="bg-amber-100/70 p-3.5 rounded-xl border border-amber-300/80 space-y-1.5 text-[11px]">
+                  <div className="font-bold uppercase tracking-wider text-amber-900 text-[10px]">
+                    Geographical Area &amp; Survey Geometry Direction
+                  </div>
+                  <div className="text-slate-900 leading-relaxed">{deedGeo.fullDescription}</div>
+                  <div className="font-mono text-[10px] text-amber-950 break-words">
+                    {deedGeo.edgeSummary}
+                  </div>
                 </div>
-                <div>
-                  <span className="text-slate-500 block">Survey Plan Lodgement:</span>
-                  <div className="font-bold text-slate-900">{deedListing.surveyPlanRef}</div>
-                </div>
-                <div>
-                  <span className="text-slate-500 block">Approved Land Use:</span>
-                  <div className="font-bold text-slate-900">{deedListing.intendedUse}</div>
-                </div>
-                <div>
-                  <span className="text-slate-500 block">Registry Token ID:</span>
-                  <div className="font-bold text-slate-900">#{deedListing.tokenId}</div>
-                </div>
-                {deedListing.sellerWallet && (
-                  <div className="col-span-2">
-                    <span className="text-slate-500 block">Seller&apos;s Receiving Wallet:</span>
-                    <div className="font-mono font-bold text-slate-900 truncate">
-                      {deedListing.sellerWallet}
+
+                <div className="bg-white/80 p-3.5 sm:p-4 rounded-xl border border-amber-200/80 grid grid-cols-1 sm:grid-cols-2 gap-3 text-[11px]">
+                  <div>
+                    <span className="text-slate-500 block">Cadastral Ref:</span>
+                    <div className="font-bold text-slate-900">{deedListing.cadastralRef}</div>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block">Survey Plan Lodgement:</span>
+                    <div className="font-bold text-slate-900">{deedListing.surveyPlanRef}</div>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block">Approved Land Use:</span>
+                    <div className="font-bold text-slate-900">{deedListing.intendedUse}</div>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block">Registry Token ID:</span>
+                    <div className="font-bold text-slate-900">#{deedListing.tokenId}</div>
+                  </div>
+                  {deedListing.sellerWallet && (
+                    <div className="sm:col-span-2">
+                      <span className="text-slate-500 block">Seller&apos;s Receiving Wallet:</span>
+                      <div className="font-mono font-bold text-slate-900 break-all">
+                        {deedListing.sellerWallet}
+                      </div>
+                    </div>
+                  )}
+                  <div className="sm:col-span-2">
+                    <span className="text-slate-500 block">Digital Verification Hash:</span>
+                    <div className="font-mono font-bold text-emerald-800 truncate">
+                      {deedListing.spatialHash}
                     </div>
                   </div>
-                )}
-                <div className="col-span-2">
-                  <span className="text-slate-500 block">Digital Verification Hash:</span>
-                  <div className="font-mono font-bold text-emerald-800 truncate">
-                    {deedListing.spatialHash}
+                </div>
+              </div>
+
+              <div className="pt-4 border-t-2 border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <img
+                    src={ASSET_IMAGES.titleSeal}
+                    alt="Official Seal"
+                    referrerPolicy="no-referrer"
+                    className="w-10 h-10 object-contain shrink-0"
+                  />
+                  <div>
+                    <div className="text-xs font-bold text-slate-900">Registrar of Deeds Seal</div>
+                    <div className="text-[10px] text-slate-500">Zero Encumbrance · Ready for Transfer</div>
                   </div>
                 </div>
-              </div>
-            </div>
 
-            <div className="pt-4 border-t-2 border-amber-200 flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <img
-                  src={ASSET_IMAGES.titleSeal}
-                  alt="Official Seal"
-                  referrerPolicy="no-referrer"
-                  className="w-10 h-10 object-contain"
-                />
-                <div>
-                  <div className="text-xs font-bold text-slate-900">Registrar of Deeds Seal</div>
-                  <div className="text-[10px] text-slate-500">Zero Encumbrance · Ready for Transfer</div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => window.print()}
+                    className="px-3.5 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 text-xs font-semibold rounded-lg inline-flex items-center gap-1.5"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    <span>Print</span>
+                  </button>
+                  {deedListing.approvalStatus === 'waiting_admin_approval' ? (
+                    <button
+                      type="button"
+                      disabled
+                      className="px-4 py-2 bg-amber-200 text-amber-900 text-xs font-bold rounded-lg inline-flex items-center gap-1.5 cursor-not-allowed"
+                    >
+                      <Clock className="w-3.5 h-3.5" />
+                      <span>Waiting for admin approval</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const target = deedListing;
+                        setDeedListing(null);
+                        openBuyModal(target);
+                      }}
+                      className="px-4 py-2 bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold rounded-lg"
+                    >
+                      Proceed to Buy
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setDeedListing(null)}
+                    className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-lg"
+                  >
+                    Close
+                  </button>
                 </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => window.print()}
-                  className="px-3.5 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 text-xs font-semibold rounded-lg inline-flex items-center gap-1.5"
-                >
-                  <Printer className="w-3.5 h-3.5" />
-                  <span>Print</span>
-                </button>
-                {deedListing.approvalStatus === 'waiting_admin_approval' ? (
-                  <button
-                    type="button"
-                    disabled
-                    className="px-4 py-2 bg-amber-200 text-amber-900 text-xs font-bold rounded-lg inline-flex items-center gap-1.5 cursor-not-allowed"
-                  >
-                    <Clock className="w-3.5 h-3.5" />
-                    <span>Waiting for admin approval</span>
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const target = deedListing;
-                      setDeedListing(null);
-                      openBuyModal(target);
-                    }}
-                    className="px-4 py-2 bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold rounded-lg"
-                  >
-                    Proceed to Buy
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => setDeedListing(null)}
-                  className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-lg"
-                >
-                  Close
-                </button>
               </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* BUY / RESERVE LAND MODAL (PERSISTED TO SUPABASE) */}
       {buyListing && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs overflow-y-auto flex items-start sm:items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs overflow-y-auto flex items-start sm:items-center justify-center p-2.5 sm:p-4">
           <div className="bg-slate-900 text-slate-100 rounded-2xl max-w-lg w-full border border-slate-700 shadow-2xl max-h-[92vh] overflow-y-auto my-auto">
-            <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
-              <div>
-                <h3 className="text-base font-bold text-white">Reserve &amp; Purchase Verified Land</h3>
-                <p className="text-xs text-slate-400 mt-0.5">
+            <div className="px-4 sm:px-6 py-3.5 sm:py-4 border-b border-slate-800 flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <h3 className="text-sm sm:text-base font-bold text-white truncate">Reserve &amp; Purchase Verified Land</h3>
+                <p className="text-xs text-slate-400 mt-0.5 truncate">
                   {buyListing.title} · {buyListing.cadastralRef}
                 </p>
               </div>
               <button
                 type="button"
                 onClick={() => setBuyListing(null)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors shrink-0"
                 aria-label="Close purchase modal"
               >
                 <X className="w-4 h-4" />
@@ -882,7 +931,7 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
             </div>
 
             {submittedRef ? (
-              <div className="p-6 space-y-4">
+              <div className="p-4 sm:p-6 space-y-4">
                 <div className="bg-emerald-950/50 border border-emerald-500/40 rounded-xl p-4 flex items-start gap-3">
                   <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
                   <div className="space-y-1.5 min-w-0">
@@ -923,16 +972,16 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                   <button
                     type="button"
                     onClick={() => setBuyListing(null)}
-                    className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition-colors"
+                    className="w-full sm:w-auto px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition-colors"
                   >
                     Done
                   </button>
                 </div>
               </div>
             ) : (
-              <form onSubmit={handleSubmitPurchase} className="p-6 space-y-4">
-                <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 flex items-center gap-3.5">
-                  <div className="w-20 h-14 rounded-lg overflow-hidden shrink-0 border border-slate-800 bg-slate-900">
+              <form onSubmit={handleSubmitPurchase} className="p-4 sm:p-6 space-y-4">
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 flex items-center gap-3">
+                  <div className="w-16 sm:w-20 h-14 rounded-lg overflow-hidden shrink-0 border border-slate-800 bg-slate-900">
                     <LandRegistrySnapshot
                       coordinates={
                         buyListing.coordinates && buyListing.coordinates.length >= 3
@@ -941,6 +990,7 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                       }
                       cadastralRef={buyListing.cadastralRef}
                       areaSqm={buyListing.areaSqm}
+                      stateName={buyListing.state}
                       snapshotUrl={buyListing.imageUrl || undefined}
                       compact={true}
                     />
@@ -955,7 +1005,7 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                   </div>
                   <div className="text-right shrink-0">
                     <div className="text-[10px] uppercase tracking-wider text-slate-400">Price (USD)</div>
-                    <div className="text-base font-extrabold text-emerald-400 tabular-nums">
+                    <div className="text-sm sm:text-base font-extrabold text-emerald-400 tabular-nums">
                       {formatUsd(buyListing.priceUsd)}
                     </div>
                   </div>
@@ -1074,7 +1124,7 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                             </div>
                           </div>
 
-                          <div className="flex items-center gap-2">
+                          <div className="flex flex-col sm:flex-row sm:items-center gap-2">
                             <div className="relative flex-1">
                               <input
                                 type="text"
@@ -1086,7 +1136,7 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                                   }
                                 }}
                                 aria-label="ETH amount to send to seller wallet"
-                                className="w-full px-2.5 py-1.5 pr-11 bg-slate-950 border border-slate-700 focus:border-emerald-500 rounded-lg font-mono text-xs text-white outline-none"
+                                className="w-full px-2.5 py-2 sm:py-1.5 pr-11 bg-slate-950 border border-slate-700 focus:border-emerald-500 rounded-lg font-mono text-xs text-white outline-none"
                               />
                               <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] font-bold text-slate-400 pointer-events-none">
                                 ETH
@@ -1096,7 +1146,7 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                               type="button"
                               disabled={isSendingPayment || Boolean(paymentTxHash)}
                               onClick={() => void handlePaySellerWallet()}
-                              className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white text-xs font-bold whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 transition-colors"
+                              className="w-full sm:w-auto px-3 py-2 sm:py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white text-xs font-bold whitespace-nowrap shrink-0 inline-flex items-center justify-center gap-1.5 transition-colors"
                             >
                               {isSendingPayment ? (
                                 <>
@@ -1362,93 +1412,130 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
       )}
 
       {/* REGISTERED PARCEL SNAPSHOT INSPECTOR MODAL */}
-      {fullMapListing && (
-        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-4xl w-full overflow-hidden shadow-2xl flex flex-col max-h-[92vh]">
-            <div className="px-5 py-3.5 border-b border-slate-800 flex items-center justify-between gap-3 bg-slate-950">
-              <div className="min-w-0">
-                <h3 className="text-sm sm:text-base font-bold text-white truncate">
-                  Registered Land Survey Snapshot · {fullMapListing.title}
-                </h3>
-                <p className="text-xs text-slate-400 truncate mt-0.5">
-                  {fullMapListing.district}, {fullMapListing.lga}, {fullMapListing.state} · {fullMapListing.areaSqm.toLocaleString()} m² · Ref {fullMapListing.cadastralRef}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setFullMapListing(null)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors shrink-0"
-                aria-label="Close snapshot preview"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="p-4 bg-slate-950/70">
-              <div className="w-full aspect-[4/3] max-h-[58vh] mx-auto rounded-xl overflow-hidden border border-slate-800">
-                <LandRegistrySnapshot
-                  coordinates={
-                    fullMapListing.coordinates && fullMapListing.coordinates.length >= 3
-                      ? fullMapListing.coordinates
-                      : getDefaultPolygonForState(fullMapListing.state)
-                  }
-                  cadastralRef={fullMapListing.cadastralRef}
-                  areaSqm={fullMapListing.areaSqm}
-                  title={fullMapListing.title}
-                  snapshotUrl={fullMapListing.imageUrl || undefined}
-                />
-              </div>
-            </div>
-
-            <div className="px-5 py-3.5 border-t border-slate-800 bg-slate-950 flex flex-wrap items-center justify-between gap-3">
-              <div className="text-xs text-slate-300">
-                Asking Price:{' '}
-                <strong className="text-emerald-400 text-sm tabular-nums">
-                  {formatUsd(fullMapListing.priceUsd)}
-                </strong>{' '}
-                · Surveyed boundary with beacon monuments (PB1–PB4)
-              </div>
-              <div className="flex items-center gap-2">
+      {fullMapListing && (() => {
+        const inspectCoords =
+          fullMapListing.coordinates && fullMapListing.coordinates.length >= 3
+            ? fullMapListing.coordinates
+            : getDefaultPolygonForState(fullMapListing.state);
+        const inspectGeo = describeParcelGeography({
+          state: fullMapListing.state,
+          lga: fullMapListing.lga,
+          district: fullMapListing.district,
+          coordinates: inspectCoords,
+          areaSqm: fullMapListing.areaSqm
+        });
+        return (
+          <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-xs overflow-y-auto flex items-start sm:items-center justify-center p-2.5 sm:p-4">
+            <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-4xl w-full overflow-hidden shadow-2xl flex flex-col max-h-[92vh] my-auto">
+              <div className="px-4 sm:px-5 py-3.5 border-b border-slate-800 flex items-center justify-between gap-3 bg-slate-950">
+                <div className="min-w-0">
+                  <h3 className="text-sm sm:text-base font-bold text-white truncate">
+                    Registered Land Survey Snapshot · {fullMapListing.title}
+                  </h3>
+                  <p className="text-[11px] sm:text-xs text-slate-400 truncate mt-0.5">
+                    {fullMapListing.district}, {fullMapListing.lga}, {fullMapListing.state} · {fullMapListing.areaSqm.toLocaleString()} m² · Ref {fullMapListing.cadastralRef}
+                  </p>
+                </div>
                 <button
                   type="button"
-                  onClick={() => {
-                    const target = fullMapListing;
-                    setFullMapListing(null);
-                    setDeedListing(target);
-                  }}
-                  className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-xl inline-flex items-center gap-1.5"
+                  onClick={() => setFullMapListing(null)}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors shrink-0"
+                  aria-label="Close snapshot preview"
                 >
-                  <Layers className="w-3.5 h-3.5 text-sky-400" />
-                  <span>View Deed</span>
+                  <X className="w-4 h-4" />
                 </button>
-                {fullMapListing.approvalStatus === 'waiting_admin_approval' ? (
-                  <button
-                    type="button"
-                    disabled
-                    className="px-4 py-2 bg-amber-950/60 border border-amber-500/30 text-amber-300 text-xs font-semibold rounded-xl inline-flex items-center gap-1.5 cursor-not-allowed"
-                  >
-                    <Clock className="w-3.5 h-3.5" />
-                    <span>Waiting for admin approval</span>
-                  </button>
-                ) : (
+              </div>
+
+              <div className="p-3 sm:p-4 bg-slate-950/70 overflow-y-auto space-y-3">
+                <div className="w-full aspect-[4/3] max-h-[46vh] mx-auto rounded-xl overflow-hidden border border-slate-800">
+                  <LandRegistrySnapshot
+                    coordinates={inspectCoords}
+                    cadastralRef={fullMapListing.cadastralRef}
+                    areaSqm={fullMapListing.areaSqm}
+                    stateName={fullMapListing.state}
+                    title={fullMapListing.title}
+                    snapshotUrl={fullMapListing.imageUrl || undefined}
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 space-y-1">
+                    <div className="text-[10px] uppercase tracking-wider font-semibold text-emerald-400">
+                      Geographical Area Profile
+                    </div>
+                    <div className="font-semibold text-white">
+                      {inspectGeo.geopoliticalZone} · {fullMapListing.lga}, {fullMapListing.state}
+                    </div>
+                    <div className="text-[11px] text-slate-300">{inspectGeo.terrainProfile}</div>
+                    <div className="text-[10px] font-mono text-emerald-400">
+                      {inspectGeo.relativePosition}
+                    </div>
+                  </div>
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 space-y-1">
+                    <div className="text-[10px] uppercase tracking-wider font-semibold text-emerald-400">
+                      Geometry Direction &amp; Boundary Span
+                    </div>
+                    <div className="font-semibold text-white">{inspectGeo.primaryOrientation}</div>
+                    <div className="text-[11px] font-mono text-slate-300">
+                      Span: {inspectGeo.dimensionsLabel}
+                    </div>
+                    <div className="text-[10px] font-mono text-slate-400 break-words">
+                      {inspectGeo.edgeSummary}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="px-4 sm:px-5 py-3.5 border-t border-slate-800 bg-slate-950 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="text-xs text-slate-300">
+                  Asking Price:{' '}
+                  <strong className="text-emerald-400 text-sm tabular-nums">
+                    {formatUsd(fullMapListing.priceUsd)}
+                  </strong>{' '}
+                  · Surveyed boundary with beacon monuments (PB1–PB4)
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
                     onClick={() => {
                       const target = fullMapListing;
                       setFullMapListing(null);
-                      openBuyModal(target);
+                      setDeedListing(target);
                     }}
-                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl inline-flex items-center gap-1.5"
+                    className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-xl inline-flex items-center gap-1.5"
                   >
-                    <span>Buy Land</span>
-                    <ArrowRight className="w-3.5 h-3.5" />
+                    <Layers className="w-3.5 h-3.5 text-sky-400" />
+                    <span>View Deed</span>
                   </button>
-                )}
+                  {fullMapListing.approvalStatus === 'waiting_admin_approval' ? (
+                    <button
+                      type="button"
+                      disabled
+                      className="px-4 py-2 bg-amber-950/60 border border-amber-500/30 text-amber-300 text-xs font-semibold rounded-xl inline-flex items-center gap-1.5 cursor-not-allowed"
+                    >
+                      <Clock className="w-3.5 h-3.5" />
+                      <span>Waiting for admin approval</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const target = fullMapListing;
+                        setFullMapListing(null);
+                        openBuyModal(target);
+                      }}
+                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl inline-flex items-center gap-1.5"
+                    >
+                      <span>Buy Land</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 };

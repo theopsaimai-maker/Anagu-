@@ -77,13 +77,13 @@ export const ScreenLandingPage: React.FC<Props> = ({
   return (
     <div className="w-full min-h-screen bg-[#070b12] text-slate-100 flex flex-col font-sans selection:bg-emerald-500/30 selection:text-emerald-300">
       {/* 1. CLEAN TOP NAVIGATION BAR */}
-      <header className="sticky top-0 z-40 bg-[#070b12]/95 backdrop-blur-md border-b border-slate-800/80 px-6 lg:px-12 h-18 flex items-center justify-between gap-4">
+      <header className="sticky top-0 z-40 bg-[#070b12]/95 backdrop-blur-md border-b border-slate-800/80 px-4 sm:px-6 lg:px-12 h-16 sm:h-18 flex items-center justify-between gap-4">
         <button
           type="button"
           onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-          className="flex items-center gap-3 cursor-pointer shrink-0 group text-left"
+          className="flex items-center gap-2.5 sm:gap-3 cursor-pointer shrink-0 group text-left"
         >
-          <div className="w-10 h-10 rounded-full p-0.5 bg-gradient-to-tr from-emerald-500 via-amber-400 to-emerald-400 shadow-md shrink-0 group-hover:scale-105 transition-transform duration-200">
+          <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-full p-0.5 bg-gradient-to-tr from-emerald-500 via-amber-400 to-emerald-400 shadow-md shrink-0 group-hover:scale-105 transition-transform duration-200">
             <img
               src={ASSET_IMAGES.logoAvatar}
               alt="Anagu Emblem"
@@ -91,7 +91,7 @@ export const ScreenLandingPage: React.FC<Props> = ({
               className="w-full h-full object-cover rounded-full bg-slate-900"
             />
           </div>
-          <span className="text-xl font-bold tracking-tight text-white whitespace-nowrap">
+          <span className="text-lg sm:text-xl font-bold tracking-tight text-white whitespace-nowrap">
             Anagu
           </span>
         </button>
@@ -100,7 +100,7 @@ export const ScreenLandingPage: React.FC<Props> = ({
           <button
             type="button"
             onClick={() => (onOpenLands ? onOpenLands() : handleOpenStep(currentUser.role))}
-            className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs rounded-xl shadow-md transition-all inline-flex items-center gap-2 whitespace-nowrap shrink-0"
+            className="px-3.5 sm:px-4 py-2 sm:py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs rounded-xl shadow-md transition-all inline-flex items-center gap-2 whitespace-nowrap shrink-0"
           >
             <span>Access Lands</span>
             <ArrowRight className="w-3.5 h-3.5" />
@@ -109,7 +109,7 @@ export const ScreenLandingPage: React.FC<Props> = ({
           <button
             type="button"
             onClick={() => (onOpenAuth ? onOpenAuth('login', 'citizen') : handleOpenStep('citizen'))}
-            className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs rounded-xl shadow-md transition-all inline-flex items-center gap-2 whitespace-nowrap shrink-0"
+            className="px-3.5 sm:px-4 py-2 sm:py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs rounded-xl shadow-md transition-all inline-flex items-center gap-2 whitespace-nowrap shrink-0"
           >
             <span>Sign In</span>
             <ArrowRight className="w-3.5 h-3.5" />
@@ -118,9 +118,9 @@ export const ScreenLandingPage: React.FC<Props> = ({
       </header>
 
       {/* 2. HERO: CLEAR SOVEREIGN LANDING PROMISE */}
-      <section className="relative pt-14 pb-20 px-6 lg:px-12 border-b border-slate-800/80 overflow-hidden">
-        <div className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-12 items-center">
-          <div className="lg:col-span-7 space-y-6">
+      <section className="relative pt-10 sm:pt-14 pb-14 sm:pb-20 px-4 sm:px-6 lg:px-12 border-b border-slate-800/80 overflow-hidden">
+        <div className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8 sm:gap-12 items-center">
+          <div className="lg:col-span-7 space-y-5 sm:space-y-6">
             <div className="flex items-center gap-2 text-emerald-400 text-xs font-semibold tracking-wide uppercase">
               <ShieldCheck className="w-4 h-4 shrink-0" />
               <span>Federal Republic of Nigeria · Land Use Act (1978)</span>
@@ -130,15 +130,15 @@ export const ScreenLandingPage: React.FC<Props> = ({
               Sovereign Land Title Verification &amp; Role-Based Registry Access
             </h1>
 
-            <p className="text-base sm:text-lg text-slate-300 leading-relaxed max-w-xl">
+            <p className="text-sm sm:text-lg text-slate-300 leading-relaxed max-w-xl">
               Anagu unifies public title searches, citizen land filings, satellite GIS boundary checks, and traditional council attestations in one tamper-proof national registry.
             </p>
 
-            <div className="flex flex-wrap items-center gap-3 pt-2">
+            <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-3 pt-2">
               <button
                 type="button"
                 onClick={() => (onOpenLands ? onOpenLands() : handleOpenStep(currentUser ? currentUser.role : 'citizen'))}
-                className="px-6 py-3.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm rounded-xl shadow-lg transition-all inline-flex items-center gap-2 whitespace-nowrap"
+                className="px-6 py-3.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm rounded-xl shadow-lg transition-all inline-flex items-center justify-center gap-2 whitespace-nowrap"
               >
                 <span>Access Lands</span>
                 <ArrowRight className="w-4 h-4" />
@@ -146,7 +146,7 @@ export const ScreenLandingPage: React.FC<Props> = ({
               <button
                 type="button"
                 onClick={() => handleOpenStep('citizen')}
-                className="px-6 py-3.5 bg-slate-900 hover:bg-slate-800 text-slate-100 font-semibold text-sm rounded-xl border border-slate-700 hover:border-emerald-500/60 transition-colors inline-flex items-center gap-2 whitespace-nowrap"
+                className="px-6 py-3.5 bg-slate-900 hover:bg-slate-800 text-slate-100 font-semibold text-sm rounded-xl border border-slate-700 hover:border-emerald-500/60 transition-colors inline-flex items-center justify-center gap-2 whitespace-nowrap"
               >
                 <FilePlus2 className="w-4 h-4 text-emerald-400" />
                 <span>Register Lands</span>

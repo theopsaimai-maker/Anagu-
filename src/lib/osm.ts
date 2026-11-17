@@ -235,11 +235,33 @@ function computePolygonCenterAndZoom(
   return { centerLat, centerLng, zoom: chosenZoom };
 }
 
+function drawRoundedRect(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number
+): void {
+  const r = Math.min(radius, width / 2, height / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + width - r, y);
+  ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+  ctx.lineTo(x + width, y + height - r);
+  ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+  ctx.lineTo(x + r, y + height);
+  ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
 function loadTileImage(url: string): Promise<HTMLImageElement | null> {
   return new Promise((resolve) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
-    const timer = window.setTimeout(() => resolve(null), 4500);
+    const timer = window.setTimeout(() => resolve(null), 2600);
     img.onload = () => {
       window.clearTimeout(timer);
       resolve(img);
@@ -265,7 +287,7 @@ export async function captureOsmMapSnapshot(
   if (!ctx) return '';
 
   // Base cartographic background in case any tile times out
-  ctx.fillStyle = '#0f172a';
+  ctx.fillStyle = '#0c1524';
   ctx.fillRect(0, 0, width, height);
 
   const { centerLat, centerLng, zoom } = computePolygonCenterAndZoom(coordinates, width, height);
@@ -306,7 +328,7 @@ export async function captureOsmMapSnapshot(
 
   // If offline and no tiles loaded, draw crisp cadastral grid lines
   if (loadedCount === 0) {
-    ctx.strokeStyle = 'rgba(16, 185, 129, 0.15)';
+    ctx.strokeStyle = 'rgba(16, 185, 129, 0.16)';
     ctx.lineWidth = 1;
     for (let gx = 0; gx <= width; gx += 32) {
       ctx.beginPath();
@@ -329,7 +351,7 @@ export async function captureOsmMapSnapshot(
   ctx.fillStyle = grad;
   ctx.fillRect(0, height * 0.58, width, height * 0.42);
 
-  // Project parcel polygon onto the OSM map
+  // Project parcel polygon onto the map snapshot
   if (coordinates.length >= 3) {
     const points = coordinates.map(([lat, lng]) => {
       const world = latLngToWorldPixels(lat, lng, zoom);
@@ -376,8 +398,7 @@ export async function captureOsmMapSnapshot(
   ctx.font = '600 12px "JetBrains Mono", monospace';
   const coordWidth = ctx.measureText(coordText).width + 20;
   ctx.fillStyle = 'rgba(7, 11, 18, 0.82)';
-  ctx.beginPath();
-  ctx.roundRect(14, 14, coordWidth, 26, 7);
+  drawRoundedRect(ctx, 14, 14, coordWidth, 26, 7);
   ctx.fill();
   ctx.strokeStyle = 'rgba(16, 185, 129, 0.55)';
   ctx.lineWidth = 1;
@@ -390,8 +411,7 @@ export async function captureOsmMapSnapshot(
   ctx.font = '600 11px "Plus Jakarta Sans", sans-serif';
   const attrWidth = ctx.measureText(attrText).width + 16;
   ctx.fillStyle = 'rgba(7, 11, 18, 0.78)';
-  ctx.beginPath();
-  ctx.roundRect(width - attrWidth - 14, 14, attrWidth, 24, 6);
+  drawRoundedRect(ctx, width - attrWidth - 14, 14, attrWidth, 24, 6);
   ctx.fill();
   ctx.fillStyle = '#e2e8f0';
   ctx.fillText(attrText, width - attrWidth - 6, 30);

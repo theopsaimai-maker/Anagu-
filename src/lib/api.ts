@@ -52,7 +52,11 @@ export class ApiError extends Error {
   }
 }
 
-let backendAvailability: 'unknown' | 'available' | 'unavailable' = 'unknown';
+let backendUnavailableUntil = 0;
+
+export function resetBackendAvailability(): void {
+  backendUnavailableUntil = 0;
+}
 
 export function isBackendUnavailableError(err: unknown): boolean {
   if (err instanceof ApiError) {
@@ -64,35 +68,34 @@ export function isBackendUnavailableError(err: unknown): boolean {
   return false;
 }
 
-export async function checkBackendAvailable(): Promise<boolean> {
-  if (backendAvailability === 'available') return true;
-  if (backendAvailability === 'unavailable') return false;
+export async function checkBackendAvailable(force = false): Promise<boolean> {
+  if (!force && Date.now() < backendUnavailableUntil) return false;
 
   try {
-    const response = await fetch(`${API_BASE}/api/health`, { method: 'GET' });
+    const response = await fetch(`${API_BASE}/api/health`, {
+      method: 'GET',
+      cache: 'no-store',
+      signal: typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(5000) : undefined
+    });
     const contentType = response.headers.get('content-type') || '';
     if (!response.ok || !contentType.includes('application/json')) {
-      backendAvailability = 'unavailable';
+      backendUnavailableUntil = Date.now() + 4000;
       return false;
     }
     const data = await response.json().catch(() => null);
     if (data && typeof data === 'object' && 'ok' in data) {
-      backendAvailability = 'available';
+      backendUnavailableUntil = 0;
       return true;
     }
-    backendAvailability = 'unavailable';
+    backendUnavailableUntil = Date.now() + 4000;
     return false;
   } catch {
-    backendAvailability = 'unavailable';
+    backendUnavailableUntil = Date.now() + 2500;
     return false;
   }
 }
 
 async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
-  if (backendAvailability === 'unavailable') {
-    throw new ApiError('Backend API is unavailable in static preview mode.', 404, true);
-  }
-
   const token = getActiveBearerToken();
   let response: Response;
   try {
@@ -105,6 +108,7 @@ async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
       ...options
     });
   } catch {
+    backendUnavailableUntil = Date.now() + 2500;
     throw new ApiError('Unable to reach backend service.', 0, true);
   }
 
@@ -124,7 +128,7 @@ async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
         response.status === 504 ||
         !isJson);
     if (unavailable) {
-      backendAvailability = 'unavailable';
+      backendUnavailableUntil = Date.now() + (response.status >= 500 ? 1500 : 4000);
     }
     throw new ApiError(
       serverErrorMsg || `Request failed (${response.status})`,
@@ -133,7 +137,7 @@ async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
     );
   }
 
-  backendAvailability = 'available';
+  backendUnavailableUntil = 0;
   return data as T;
 }
 

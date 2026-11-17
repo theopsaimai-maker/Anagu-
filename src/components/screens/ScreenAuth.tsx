@@ -311,13 +311,13 @@ export const ScreenAuth: React.FC<Props> = ({
   return (
     <div className="w-full min-h-screen bg-[#070b12] text-slate-100 flex flex-col font-sans selection:bg-emerald-500/30 selection:text-emerald-300">
       {/* Clean 3-Zone Top Bar */}
-      <header className="bg-[#070b12]/95 backdrop-blur-md border-b border-slate-800/80 px-6 lg:px-12 h-18 flex items-center justify-between gap-8 shrink-0">
+      <header className="bg-[#070b12]/95 backdrop-blur-md border-b border-slate-800/80 px-4 sm:px-6 lg:px-12 h-16 sm:h-18 flex items-center justify-between gap-3 sm:gap-8 shrink-0">
         <button
           type="button"
           onClick={onBackToLanding}
-          className="flex items-center gap-3 cursor-pointer shrink-0 group text-left"
+          className="flex items-center gap-2.5 sm:gap-3 cursor-pointer shrink-0 group text-left"
         >
-          <div className="w-10 h-10 rounded-full p-0.5 bg-gradient-to-tr from-emerald-500 via-amber-400 to-emerald-400 shadow-md shrink-0 group-hover:scale-105 transition-transform duration-200">
+          <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-full p-0.5 bg-gradient-to-tr from-emerald-500 via-amber-400 to-emerald-400 shadow-md shrink-0 group-hover:scale-105 transition-transform duration-200">
             <img
               src={ASSET_IMAGES.logoAvatar}
               alt="Anagu Emblem"
@@ -325,7 +325,7 @@ export const ScreenAuth: React.FC<Props> = ({
               className="w-full h-full object-cover rounded-full bg-slate-900"
             />
           </div>
-          <span className="text-xl font-bold tracking-tight text-white whitespace-nowrap">
+          <span className="text-lg sm:text-xl font-bold tracking-tight text-white whitespace-nowrap">
             Anagu
           </span>
         </button>
@@ -354,15 +354,16 @@ export const ScreenAuth: React.FC<Props> = ({
         <button
           type="button"
           onClick={onBackToLanding}
-          className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-700 font-semibold text-xs rounded-xl transition-colors inline-flex items-center gap-2 whitespace-nowrap shrink-0"
+          className="px-3 sm:px-4 py-2 bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-700 font-semibold text-xs rounded-xl transition-colors inline-flex items-center gap-1.5 sm:gap-2 whitespace-nowrap shrink-0"
         >
           <ArrowLeft className="w-3.5 h-3.5" />
-          <span>Back to Landing</span>
+          <span className="sm:hidden">Home</span>
+          <span className="hidden sm:inline">Back to Landing</span>
         </button>
       </header>
 
       {/* Main Split Viewport */}
-      <main className="flex-1 max-w-6xl w-full mx-auto px-6 lg:px-12 py-10 lg:py-14 grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 items-stretch">
+      <main className="flex-1 max-w-6xl w-full mx-auto px-3.5 sm:px-6 lg:px-12 py-6 sm:py-10 lg:py-14 grid grid-cols-1 lg:grid-cols-12 gap-6 sm:gap-8 lg:gap-12 items-stretch">
         {/* Left Column: Role Context & Visual Anchor */}
         <section className="lg:col-span-5 flex flex-col justify-between bg-slate-900 rounded-2xl border border-slate-800 overflow-hidden">
           <div className="relative h-64 lg:h-72 bg-gradient-to-br from-slate-900 via-emerald-950/40 to-slate-950 overflow-hidden">
@@ -420,7 +421,7 @@ export const ScreenAuth: React.FC<Props> = ({
         </section>
 
         {/* Right Column: Auth Form Card */}
-        <section className="lg:col-span-7 bg-slate-900 rounded-2xl border border-slate-800 p-6 sm:p-10 flex flex-col justify-between space-y-8">
+        <section className="lg:col-span-7 bg-slate-900 rounded-2xl border border-slate-800 p-4 sm:p-8 lg:p-10 flex flex-col justify-between space-y-6 sm:space-y-8">
           <div className="space-y-6">
             {/* Mode Switcher */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-slate-800">

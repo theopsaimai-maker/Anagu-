@@ -51,8 +51,33 @@ import {
 } from './lib/api';
 
 const STORAGE_KEY = 'anagu_parcels_v1';
+const UNSYNCED_PARCELS_KEY = 'anagu_unsynced_parcels_v1';
 const USERS_STORAGE_KEY = 'anagu_users_v1';
 const SESSION_STORAGE_KEY = 'anagu_session_v1';
+
+function readUnsyncedParcelIds(): string[] {
+  try {
+    const raw = localStorage.getItem(UNSYNCED_PARCELS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeUnsyncedParcelIds(ids: string[]): void {
+  try {
+    const unique = Array.from(new Set(ids));
+    if (unique.length === 0) {
+      localStorage.removeItem(UNSYNCED_PARCELS_KEY);
+    } else {
+      localStorage.setItem(UNSYNCED_PARCELS_KEY, JSON.stringify(unique));
+    }
+  } catch {
+    // Ignore storage quota errors
+  }
+}
 
 export default function App() {
   const [parcels, setParcels] = useState<ParcelRecord[]>(() => {
@@ -147,35 +172,73 @@ export default function App() {
   const [activePortalStep, setActivePortalStep] = useState<PortalStepId>('citizen');
   const [activeParcelId, setActiveParcelId] = useState<string>(parcels[1]?.id || parcels[0]?.id || '');
 
-  // Hydrate registry parcels & MQTT log from database (or cross-tab storage) on mount, focus, and interval
-  // so Admin verification/rejection/revocation updates reflect on Access Lands live
-  useEffect(() => {
-    let active = true;
-    const syncFromBackend = async () => {
-      try {
-        const hasBackend = await checkBackendAvailable();
-        if (!hasBackend || !active) return;
-        const [remoteParcels, remoteMqtt] = await Promise.all([
-          apiListParcels(),
-          apiListMqttMessages()
-        ]);
-        if (!active) return;
-        if (Array.isArray(remoteParcels)) {
-          setParcels(remoteParcels);
-          setActiveParcelId((prev) =>
-            prev && remoteParcels.some((p) => p.id === prev)
-              ? prev
-              : remoteParcels[1]?.id || remoteParcels[0]?.id || ''
-          );
-        }
-        if (Array.isArray(remoteMqtt) && remoteMqtt.length > 0) {
-          setMqttMessages(remoteMqtt);
-        }
-      } catch {
-        // Keep local cache if backend API is temporarily unavailable
-      }
-    };
+  const syncFromBackend = useCallback(async (forceHealth = false) => {
+    try {
+      const hasBackend = await checkBackendAvailable(forceHealth);
+      if (!hasBackend) return;
 
+      const pendingIds = readUnsyncedParcelIds();
+      let currentLocalParcels: ParcelRecord[] = [];
+      try {
+        const rawLocal = localStorage.getItem(STORAGE_KEY);
+        const parsed = rawLocal ? JSON.parse(rawLocal) : [];
+        if (Array.isArray(parsed)) currentLocalParcels = parsed;
+      } catch {
+        currentLocalParcels = [];
+      }
+
+      const [initialRemoteParcels, remoteMqtt] = await Promise.all([
+        apiListParcels(),
+        apiListMqttMessages()
+      ]);
+
+      let remoteParcels = Array.isArray(initialRemoteParcels) ? initialRemoteParcels : [];
+      const remoteIdSet = new Set(remoteParcels.map((p) => p.id));
+
+      // Replay any local submissions that were not yet persisted on the server
+      if (pendingIds.length > 0) {
+        const stillUnsynced: string[] = [];
+        for (const pendingId of pendingIds) {
+          if (remoteIdSet.has(pendingId)) continue;
+          const candidate = currentLocalParcels.find((p) => p.id === pendingId);
+          if (!candidate) continue;
+          try {
+            const uploaded = await apiCreateParcel(candidate, currentUser?.id);
+            remoteParcels = [uploaded, ...remoteParcels.filter((p) => p.id !== uploaded.id)];
+            remoteIdSet.add(uploaded.id);
+          } catch {
+            stillUnsynced.push(pendingId);
+          }
+        }
+        writeUnsyncedParcelIds(stillUnsynced);
+      }
+
+      if (Array.isArray(remoteParcels)) {
+        const remainingUnsynced = new Set(readUnsyncedParcelIds());
+        setParcels((prev) => {
+          const localPendingOnly = prev.filter(
+            (p) => !remoteIdSet.has(p.id) && remainingUnsynced.has(p.id)
+          );
+          const merged = [...localPendingOnly, ...remoteParcels];
+          setActiveParcelId((prevActive) =>
+            prevActive && merged.some((p) => p.id === prevActive)
+              ? prevActive
+              : merged[1]?.id || merged[0]?.id || ''
+          );
+          return merged;
+        });
+      }
+      if (Array.isArray(remoteMqtt) && remoteMqtt.length > 0) {
+        setMqttMessages(remoteMqtt);
+      }
+    } catch {
+      // Keep local cache if backend API is temporarily unavailable
+    }
+  }, [currentUser?.id]);
+
+  // Hydrate registry parcels & MQTT log from database (or cross-tab storage) on mount, focus, visibility & interval
+  // so Admin verification/rejection/revocation updates & cross-device submissions reflect live
+  useEffect(() => {
     const handleStorageChange = (e: StorageEvent) => {
       if (e.key === STORAGE_KEY && e.newValue) {
         try {
@@ -187,38 +250,30 @@ export default function App() {
       }
     };
 
-    syncFromBackend();
-    const intervalId = window.setInterval(syncFromBackend, 10000);
-    window.addEventListener('focus', syncFromBackend);
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        void syncFromBackend(true);
+      }
+    };
+
+    void syncFromBackend(true);
+    const intervalId = window.setInterval(() => void syncFromBackend(false), 8000);
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
     window.addEventListener('storage', handleStorageChange);
     return () => {
-      active = false;
       window.clearInterval(intervalId);
-      window.removeEventListener('focus', syncFromBackend);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
       window.removeEventListener('storage', handleStorageChange);
     };
-  }, []);
+  }, [syncFromBackend]);
 
   useEffect(() => {
-    if (viewMode !== 'lands') return;
-    let active = true;
-    checkBackendAvailable()
-      .then((ok) => (ok ? apiListParcels() : null))
-      .then((remoteParcels) => {
-        if (!active || !Array.isArray(remoteParcels)) return;
-        setParcels((prev) => {
-          const remoteIds = new Set(remoteParcels.map((p) => p.id));
-          const optimisticOnly = prev.filter((p) => !remoteIds.has(p.id) && p.status === 'draft');
-          return [...optimisticOnly, ...remoteParcels];
-        });
-      })
-      .catch(() => {
-        // Keep current state if backend unavailable
-      });
-    return () => {
-      active = false;
-    };
-  }, [viewMode]);
+    if (viewMode === 'lands' || viewMode === 'portal') {
+      void syncFromBackend(true);
+    }
+  }, [viewMode, syncFromBackend]);
   const [activePage, setActivePage] = useState<FigmaPageId>('screens');
   const [zoomLevel, setZoomLevel] = useState<number>(0.65);
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 80, y: 60 });
@@ -310,23 +365,34 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [showTour, showShortcuts, viewMode, selectedFrameId, handleFocusFrame]);
 
-  // Pipeline state handlers (optimistic state + backend persistence)
-  const handleNewParcelSubmit = (newParcel: ParcelRecord) => {
-    setParcels(prev => [newParcel, ...prev]);
-    apiCreateParcel(newParcel, currentUser?.id)
-      .then((saved) => {
-        setParcels(prev => prev.map(p => (p.id === saved.id ? saved : p)));
-      })
-      .catch(() => {
-        // Keep local state if offline
-      });
+  // Pipeline state handlers (optimistic state + awaited backend persistence with retry)
+  const handleNewParcelSubmit = async (newParcel: ParcelRecord): Promise<ParcelRecord> => {
+    setParcels(prev => [newParcel, ...prev.filter(p => p.id !== newParcel.id)]);
+    writeUnsyncedParcelIds([...readUnsyncedParcelIds(), newParcel.id]);
+
+    let finalParcel = newParcel;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const saved = await apiCreateParcel(newParcel, currentUser?.id);
+        finalParcel = saved;
+        writeUnsyncedParcelIds(readUnsyncedParcelIds().filter((id) => id !== newParcel.id && id !== saved.id));
+        setParcels(prev => prev.map(p => (p.id === saved.id || p.id === newParcel.id ? saved : p)));
+        break;
+      } catch {
+        if (attempt === 0) {
+          await new Promise((r) => window.setTimeout(r, 500));
+        }
+      }
+    }
+
     handleEmitMqtt('land/registration/status', {
-      applicationId: newParcel.id,
+      applicationId: finalParcel.id,
       status: 'submitted',
-      applicant: newParcel.applicantName,
-      cadastralRef: newParcel.cadastralRef,
+      applicant: finalParcel.applicantName,
+      cadastralRef: finalParcel.cadastralRef,
       timestamp: new Date().toISOString()
     });
+    return finalParcel;
   };
 
   const handleApproveSpatial = (parcelId: string) => {
@@ -490,7 +556,7 @@ export default function App() {
     return (
       <div className="min-h-screen w-full flex flex-col bg-slate-950 text-slate-100 overflow-x-hidden font-sans">
         {/* Clean Portal Header */}
-        <header className="sticky top-0 bg-[#070b12]/95 backdrop-blur-md border-b border-slate-800 px-4 lg:px-8 h-16 flex items-center justify-between gap-4 shrink-0 z-40">
+        <header className="sticky top-0 bg-[#070b12]/95 backdrop-blur-md border-b border-slate-800 px-3 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-2 sm:gap-4 shrink-0 z-40">
           {/* Brand Avatar */}
           <button
             onClick={() => setViewMode('landing')}

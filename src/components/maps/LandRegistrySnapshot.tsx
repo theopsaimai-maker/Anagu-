@@ -1,10 +1,12 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Compass } from 'lucide-react';
+import { describeParcelGeography } from '../../lib/geoDescription';
 
 interface LandRegistrySnapshotProps {
   coordinates: [number, number][];
   cadastralRef: string;
   areaSqm: number;
+  stateName?: string;
   title?: string;
   snapshotUrl?: string;
   compact?: boolean;
@@ -12,6 +14,28 @@ interface LandRegistrySnapshotProps {
 }
 
 const snapshotCache = new Map<string, string>();
+
+function drawRoundedRect(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number
+): void {
+  const r = Math.min(radius, width / 2, height / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + width - r, y);
+  ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+  ctx.lineTo(x + width, y + height - r);
+  ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+  ctx.lineTo(x + r, y + height);
+  ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
 
 function latLngToWorldPixels(lat: number, lng: number, zoom: number): { x: number; y: number } {
   const scale = 256 * Math.pow(2, zoom);
@@ -65,7 +89,7 @@ function loadTile(url: string): Promise<HTMLImageElement | null> {
   return new Promise((resolve) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
-    const timer = window.setTimeout(() => resolve(null), 5000);
+    const timer = window.setTimeout(() => resolve(null), 2600);
     img.onload = () => {
       window.clearTimeout(timer);
       resolve(img);
@@ -96,7 +120,7 @@ function drawRegistryOverlay(
     ctx.fillStyle = '#0c1524';
     ctx.fillRect(0, 0, width, height);
 
-    ctx.strokeStyle = 'rgba(148, 163, 184, 0.08)';
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.09)';
     ctx.lineWidth = 1;
     for (let x = 0; x <= width; x += 32) {
       ctx.beginPath();
@@ -179,8 +203,7 @@ function drawRegistryOverlay(
       const tag = `${areaSqm.toLocaleString()} m²`;
       ctx.font = '700 13px "JetBrains Mono", monospace';
       const tagW = ctx.measureText(tag).width + 20;
-      ctx.beginPath();
-      ctx.roundRect(cx - tagW / 2, cy - 13, tagW, 26, 6);
+      drawRoundedRect(ctx, cx - tagW / 2, cy - 13, tagW, 26, 6);
       ctx.fill();
       ctx.strokeStyle = 'rgba(52, 211, 153, 0.75)';
       ctx.lineWidth = 1.2;
@@ -208,8 +231,7 @@ function drawRegistryOverlay(
         ctx.font = '700 10px "JetBrains Mono", monospace';
         const lw = ctx.measureText(label).width + 8;
         ctx.fillStyle = 'rgba(7, 11, 18, 0.85)';
-        ctx.beginPath();
-        ctx.roundRect(pt.x + 8, pt.y - 16, lw, 16, 4);
+        drawRoundedRect(ctx, pt.x + 8, pt.y - 16, lw, 16, 4);
         ctx.fill();
         ctx.fillStyle = '#a7f3d0';
         ctx.fillText(label, pt.x + 12, pt.y - 5);
@@ -225,7 +247,7 @@ function drawRegistryOverlay(
   ctx.fillRect(0, height * 0.72, width, height * 0.28);
 
   if (!compact) {
-    // Bottom-left Survey Plan Cadastral Stamp (no OpenStreet text)
+    // Bottom-left Survey Plan Cadastral Stamp
     ctx.font = '600 11px "JetBrains Mono", monospace';
     ctx.fillStyle = 'rgba(226, 232, 240, 0.92)';
     ctx.fillText(`SURVEY SNAPSHOT · ${cadastralRef}`, 16, height - 16);
@@ -236,21 +258,40 @@ export const LandRegistrySnapshot: React.FC<LandRegistrySnapshotProps> = ({
   coordinates,
   cadastralRef,
   areaSqm,
+  stateName = 'Federal Capital Territory (Abuja)',
   title,
   snapshotUrl,
   compact = false,
   className = ''
 }) => {
-  const [renderedSrc, setRenderedSrc] = useState<string>(snapshotUrl || '');
+  const usableSnapshotUrl =
+    typeof snapshotUrl === 'string' &&
+    /^(data:image\/(png|jpeg|jpg|webp);base64,|https:\/\/|\/)/i.test(snapshotUrl.trim())
+      ? snapshotUrl.trim()
+      : '';
+
+  const [snapshotBroken, setSnapshotBroken] = useState(false);
+  const [renderedSrc, setRenderedSrc] = useState<string>(usableSnapshotUrl);
   const [tileFailed, setTileFailed] = useState(false);
   const mountedRef = useRef(true);
 
-  const center = coordinates.length
-    ? {
-        lat: coordinates.reduce((s, c) => s + c[0], 0) / coordinates.length,
-        lng: coordinates.reduce((s, c) => s + c[1], 0) / coordinates.length
-      }
-    : { lat: 9.0765, lng: 7.3986 };
+  useEffect(() => {
+    setSnapshotBroken(false);
+    setTileFailed(false);
+    if (usableSnapshotUrl) {
+      setRenderedSrc(usableSnapshotUrl);
+    }
+  }, [usableSnapshotUrl]);
+
+  const geoInfo = useMemo(
+    () =>
+      describeParcelGeography({
+        state: stateName,
+        coordinates,
+        areaSqm
+      }),
+    [stateName, coordinates, areaSqm]
+  );
 
   useEffect(() => {
     mountedRef.current = true;
@@ -260,8 +301,8 @@ export const LandRegistrySnapshot: React.FC<LandRegistrySnapshotProps> = ({
   }, []);
 
   useEffect(() => {
-    if (snapshotUrl) {
-      setRenderedSrc(snapshotUrl);
+    if (usableSnapshotUrl && !snapshotBroken) {
+      setRenderedSrc(usableSnapshotUrl);
       return;
     }
 
@@ -285,7 +326,7 @@ export const LandRegistrySnapshot: React.FC<LandRegistrySnapshotProps> = ({
     const topLeftWorldX = centerWorld.x - width / 2;
     const topLeftWorldY = centerWorld.y - height / 2;
 
-    // Immediately paint crisp blueprint snapshot before tiles complete
+    // Immediately paint crisp blueprint snapshot before street tiles complete
     drawRegistryOverlay(
       ctx,
       coordinates,
@@ -356,7 +397,7 @@ export const LandRegistrySnapshot: React.FC<LandRegistrySnapshotProps> = ({
       snapshotCache.set(cacheKey, finalDataUrl);
       setRenderedSrc(finalDataUrl);
     });
-  }, [coordinates, cadastralRef, areaSqm, snapshotUrl, compact]);
+  }, [coordinates, cadastralRef, areaSqm, usableSnapshotUrl, snapshotBroken, compact]);
 
   return (
     <div className={`relative w-full h-full overflow-hidden bg-slate-950 select-none ${className}`}>
@@ -365,7 +406,13 @@ export const LandRegistrySnapshot: React.FC<LandRegistrySnapshotProps> = ({
           src={renderedSrc}
           alt={title ? `Land registry survey snapshot for ${title}` : `Land registry snapshot ${cadastralRef}`}
           referrerPolicy="no-referrer"
-          onError={() => setTileFailed(true)}
+          onError={() => {
+            if (usableSnapshotUrl && !snapshotBroken) {
+              setSnapshotBroken(true);
+            } else {
+              setTileFailed(true);
+            }
+          }}
           className="w-full h-full object-cover object-center transition-transform duration-300 group-hover:scale-[1.02]"
         />
       ) : (
@@ -376,19 +423,21 @@ export const LandRegistrySnapshot: React.FC<LandRegistrySnapshotProps> = ({
 
       {!compact && (
         <>
-          {/* Clean Coordinate & North Indicator Overlays */}
-          <div className="pointer-events-none absolute top-3 left-3 flex items-center gap-1.5 bg-slate-950/85 backdrop-blur-xs border border-slate-700/80 px-2.5 py-1 rounded-md text-[10px] font-mono text-emerald-300 tabular-nums">
-            <span>
-              {center.lat.toFixed(4)}°N, {center.lng.toFixed(4)}°E
+          {/* Clean Coordinate & Directional Compass Overlays */}
+          <div className="pointer-events-none absolute top-3 left-3 flex items-center gap-1.5 bg-slate-950/85 backdrop-blur-xs border border-slate-700/80 px-2.5 py-1 rounded-md text-[10px] font-mono text-emerald-300 tabular-nums max-w-[60%] truncate">
+            <span className="truncate">
+              {geoInfo.centroid.lat.toFixed(4)}°N, {geoInfo.centroid.lng.toFixed(4)}°E
             </span>
           </div>
 
           <div
             aria-hidden="true"
-            className="pointer-events-none absolute bottom-3 right-3 flex items-center gap-1 bg-slate-950/85 border border-slate-700/80 px-2 py-1 rounded-md text-[10px] font-mono font-bold text-slate-200"
+            className="pointer-events-none absolute bottom-3 right-3 flex items-center gap-1 bg-slate-950/90 border border-slate-700/80 px-2 py-1 rounded-md text-[10px] font-mono font-bold text-slate-200 tabular-nums"
           >
-            <Compass className="w-3 h-3 text-emerald-400" />
-            <span>N</span>
+            <Compass className="w-3 h-3 text-emerald-400 shrink-0" />
+            <span>
+              {String(geoInfo.bearingDeg).padStart(3, '0')}° {geoInfo.cardinalCode}
+            </span>
           </div>
         </>
       )}

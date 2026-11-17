@@ -43,6 +43,8 @@ import type {
 import { ASSET_IMAGES } from '../data/mockData';
 import { NIGERIA_STATES_AND_LGAS } from '../data/nigeriaLocations';
 import { OpenStreetMapWidget } from '../components/maps/OpenStreetMapWidget';
+import { LandRegistrySnapshot } from '../components/maps/LandRegistrySnapshot';
+import { describeParcelGeography } from '../lib/geoDescription';
 import {
   ADMIN_TOKEN_KEY,
   ADMIN_USER_KEY,
@@ -763,7 +765,7 @@ export const AdminApp: React.FC = () => {
   return (
     <div className="min-h-screen w-full bg-[#060911] text-slate-100 flex flex-col font-sans selection:bg-emerald-500/30">
       {/* Top Bar */}
-      <header className="sticky top-0 z-40 border-b border-slate-800 bg-[#070b12]/95 backdrop-blur-md px-4 sm:px-8 h-16 flex items-center justify-between gap-4">
+      <header className="sticky top-0 z-40 border-b border-slate-800 bg-[#070b12]/95 backdrop-blur-md px-3 sm:px-8 h-16 flex items-center justify-between gap-2 sm:gap-4">
         <div className="flex items-center gap-3 min-w-0">
           <div className="w-9 h-9 rounded-full p-0.5 bg-gradient-to-tr from-emerald-500 via-amber-400 to-emerald-400 shrink-0">
             <img
@@ -1043,17 +1045,17 @@ export const AdminApp: React.FC = () => {
                       className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-4"
                     >
                       <div className="flex items-start gap-3.5 min-w-0">
-                        {parcel.mapSnapshotUrl ? (
-                          <img
-                            src={parcel.mapSnapshotUrl}
-                            alt={parcel.district}
-                            className="w-20 h-14 object-cover rounded-lg border border-slate-700 shrink-0"
+                        <div className="w-20 h-14 rounded-lg overflow-hidden border border-slate-700 shrink-0 bg-slate-950">
+                          <LandRegistrySnapshot
+                            coordinates={parcel.coordinates}
+                            cadastralRef={parcel.cadastralRef}
+                            areaSqm={parcel.areaSqm}
+                            stateName={parcel.state}
+                            title={parcel.district}
+                            snapshotUrl={parcel.mapSnapshotUrl || undefined}
+                            compact={true}
                           />
-                        ) : (
-                          <div className="w-20 h-14 rounded-lg border border-slate-700 bg-slate-950 flex items-center justify-center shrink-0">
-                            <Landmark className="w-5 h-5 text-amber-400" />
-                          </div>
-                        )}
+                        </div>
                         <div className="min-w-0 space-y-1">
                           <div className="flex flex-wrap items-center gap-2">
                             <span className="text-xs font-bold text-white">
@@ -1242,17 +1244,17 @@ export const AdminApp: React.FC = () => {
                       className="bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4"
                     >
                       <div className="flex items-start gap-4 min-w-0">
-                        {parcel.mapSnapshotUrl ? (
-                          <img
-                            src={parcel.mapSnapshotUrl}
-                            alt={parcel.district}
-                            className="w-24 h-20 object-cover rounded-xl border border-slate-700 shrink-0"
+                        <div className="w-24 h-20 rounded-xl overflow-hidden border border-slate-700 shrink-0 bg-slate-950">
+                          <LandRegistrySnapshot
+                            coordinates={parcel.coordinates}
+                            cadastralRef={parcel.cadastralRef}
+                            areaSqm={parcel.areaSqm}
+                            stateName={parcel.state}
+                            title={parcel.district}
+                            snapshotUrl={parcel.mapSnapshotUrl || undefined}
+                            compact={true}
                           />
-                        ) : (
-                          <div className="w-24 h-20 rounded-xl border border-slate-700 bg-slate-950 flex items-center justify-center shrink-0">
-                            <MapPin className="w-6 h-6 text-emerald-400" />
-                          </div>
-                        )}
+                        </div>
 
                         <div className="min-w-0 space-y-1.5">
                           <div className="flex flex-wrap items-center gap-2">
@@ -1569,7 +1571,7 @@ export const AdminApp: React.FC = () => {
               </button>
             </div>
 
-            <div className="p-6 space-y-4 text-xs">
+            <div className="p-4 sm:p-6 space-y-4 text-xs">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="rounded-xl overflow-hidden border border-slate-800 bg-slate-950 h-48">
                   <OpenStreetMapWidget
@@ -1579,21 +1581,38 @@ export const AdminApp: React.FC = () => {
                     landmarkLabel={inspectParcel.district}
                   />
                 </div>
-                <div className="rounded-xl overflow-hidden border border-slate-800 bg-slate-950 h-48 flex items-center justify-center">
-                  {inspectParcel.mapSnapshotUrl ? (
-                    <img
-                      src={inspectParcel.mapSnapshotUrl}
-                      alt={inspectParcel.district}
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    <div className="text-center p-4 space-y-1 text-slate-400">
-                      <Building2 className="w-6 h-6 mx-auto text-emerald-400" />
-                      <span>Live OpenStreetMap View Active</span>
-                    </div>
-                  )}
+                <div className="rounded-xl overflow-hidden border border-slate-800 bg-slate-950 h-48">
+                  <LandRegistrySnapshot
+                    coordinates={inspectParcel.coordinates}
+                    cadastralRef={inspectParcel.cadastralRef}
+                    areaSqm={inspectParcel.areaSqm}
+                    stateName={inspectParcel.state}
+                    title={inspectParcel.district}
+                    snapshotUrl={inspectParcel.mapSnapshotUrl || undefined}
+                  />
                 </div>
               </div>
+
+              {(() => {
+                const adminGeo = describeParcelGeography({
+                  state: inspectParcel.state,
+                  lga: inspectParcel.lga,
+                  district: inspectParcel.district,
+                  coordinates: inspectParcel.coordinates,
+                  areaSqm: inspectParcel.areaSqm
+                });
+                return (
+                  <div className="bg-slate-950 border border-emerald-500/30 rounded-xl p-3.5 space-y-1.5 text-[11px]">
+                    <div className="font-bold uppercase tracking-wider text-emerald-400 text-[10px]">
+                      Geometry Direction &amp; Geographical Area
+                    </div>
+                    <div className="text-slate-200 leading-relaxed">{adminGeo.fullDescription}</div>
+                    <div className="font-mono text-[10px] text-slate-400 break-words">
+                      {adminGeo.edgeSummary}
+                    </div>
+                  </div>
+                );
+              })()}
 
               <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
