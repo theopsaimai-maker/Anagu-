@@ -7,6 +7,20 @@ import { attachApiRoutes } from './server/createApiApp.ts';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+function getCliArg(flag: string): string | undefined {
+  const args = process.argv.slice(2);
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === flag && i + 1 < args.length) {
+      return args[i + 1];
+    }
+    if (arg.startsWith(`${flag}=`)) {
+      return arg.slice(flag.length + 1);
+    }
+  }
+  return undefined;
+}
+
 async function startServer() {
   const app = express();
   attachApiRoutes(app);
@@ -20,6 +34,8 @@ async function startServer() {
     reqPath === '/admin' || reqPath === '/admin/' || reqPath.startsWith('/admin/');
 
   const isProduction = process.env.NODE_ENV === 'production';
+  let viteServer: { close: () => Promise<void> } | null = null;
+
   if (!isProduction) {
     // Route /admin, /admin/*, or admin.* / -admin.* subdomains to admin.html
     app.use((req, _res, next) => {
@@ -86,9 +102,15 @@ export class ErrorOverlay extends HTMLElement {}
     });
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true, hmr: false, ws: false },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+        ws: false,
+        watch: process.env.DISABLE_HMR === 'true' ? null : undefined
+      },
       appType: 'spa'
     });
+    viteServer = vite;
     app.use(vite.middlewares);
   } else {
     const distDir = path.join(__dirname, 'dist');
@@ -107,9 +129,37 @@ export class ErrorOverlay extends HTMLElement {}
     });
   }
 
-  const port = Number(process.env.PORT) || 3000;
-  app.listen(port, '0.0.0.0', () => {
-    console.log(`Anagu Land Administration server listening on http://0.0.0.0:${port}`);
+  const cliPort = Number(getCliArg('--port'));
+  const port = Number.isFinite(cliPort) && cliPort > 0 ? cliPort : Number(process.env.PORT) || 3000;
+  const host = getCliArg('--host') || '0.0.0.0';
+
+  const httpServer = app.listen(port, host, () => {
+    console.log(`Anagu Land Administration server listening on http://${host}:${port}`);
+  });
+
+  httpServer.on('error', (err) => {
+    console.error('[anagu/server] HTTP server error:', err);
+  });
+
+  const shutdown = async (signal: string) => {
+    console.log(`[anagu/server] Received ${signal}, shutting down cleanly...`);
+    try {
+      if (viteServer) {
+        await viteServer.close();
+      }
+    } catch {
+      // Ignore vite close errors during shutdown
+    }
+    httpServer.close(() => {
+      process.exit(0);
+    });
+    setTimeout(() => process.exit(0), 2000).unref();
+  };
+
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('unhandledRejection', (reason) => {
+    console.error('[anagu/server] Unhandled promise rejection:', reason);
   });
 }
 
