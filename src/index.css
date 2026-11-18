@@ -4,6 +4,9 @@
   :root {
     --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
     --font-mono: 'JetBrains Mono', monospace;
+    /* TEMPORARY DEPLOYMENT TEST: Primary button color override */
+    --anagu-primary-btn: #FF6600;
+    --anagu-primary-btn-hover: #E65C00;
   }
 
   html {
@@ -51,4 +54,14 @@
   background-image: linear-gradient(to right, rgba(16, 185, 129, 0.08) 1px, transparent 1px),
                     linear-gradient(to bottom, rgba(16, 185, 129, 0.08) 1px, transparent 1px);
   background-size: 25px 25px;
+}
+
+/* TEMPORARY DEPLOYMENT TEST: Primary application button colour (#FF6600) */
+@layer utilities {
+  button.bg-emerald-600 {
+    background-color: var(--anagu-primary-btn);
+  }
+  button.bg-emerald-600:hover:not(:disabled) {
+    background-color: var(--anagu-primary-btn-hover);
+  }
 }
