@@ -324,6 +324,7 @@ service cloud.firestore {
         isValidId(userId) &&
         isOwner(userId) &&
         isValidRegistryUser(incoming()) &&
+        (incoming().role == 'citizen' || isAdmin()) &&
         incoming().id == userId &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time;

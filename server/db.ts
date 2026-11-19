@@ -9,8 +9,11 @@ import type {
   AuthUser,
   MqttMessage,
   ParcelRecord,
-  RevocationGround
+  RevocationGround,
+  SpatialConflictRecord,
+  SpatialVerificationResult
 } from '../src/types/anagu.ts';
+import { isDemoAccountsEnabled } from './auth.ts';
 
 interface StoredUserRow {
   id: string;
@@ -325,9 +328,23 @@ const SEED_ADMINS: StoredAdminRow[] = [
   }
 ];
 
+function isMemoryOnlyTestMode(): boolean {
+  return process.env.ANAGU_STORAGE_MODE === 'memory' || process.env.NODE_ENV === 'test';
+}
+
+export function resetMemoryStoreForTests(): void {
+  globalStore._anaguStoreLoaded = false;
+  globalStore._anaguStorePath = undefined;
+  globalStore._anaguMemoryUsers = undefined;
+  globalStore._anaguMemoryAdmins = undefined;
+  globalStore._anaguMemoryParcels = undefined;
+  globalStore._anaguMemoryMqtt = undefined;
+  globalStore._anaguMemoryInquiries = undefined;
+}
+
 function resolveStoreFilePath(): string {
   if (globalStore._anaguStorePath) return globalStore._anaguStorePath;
-  const preferredDir = path.join(process.cwd(), '.anagu-data');
+  const preferredDir = process.env.ANAGU_DATA_DIR?.trim() || path.join(process.cwd(), '.anagu-data');
   try {
     fs.mkdirSync(preferredDir, { recursive: true });
     fs.accessSync(preferredDir, fs.constants.W_OK);
@@ -342,6 +359,9 @@ function resolveStoreFilePath(): string {
 function loadDurableStoreOnce(): void {
   if (globalStore._anaguStoreLoaded) return;
   globalStore._anaguStoreLoaded = true;
+  if (isMemoryOnlyTestMode() && !process.env.ANAGU_DATA_DIR) {
+    return;
+  }
   try {
     const filePath = resolveStoreFilePath();
     if (!fs.existsSync(filePath)) return;
@@ -374,6 +394,9 @@ function loadDurableStoreOnce(): void {
 }
 
 function saveDurableStore(): void {
+  if (isMemoryOnlyTestMode() && !process.env.ANAGU_DATA_DIR) {
+    return;
+  }
   try {
     const filePath = resolveStoreFilePath();
     const payload = {
@@ -394,10 +417,14 @@ function saveDurableStore(): void {
 function getMemoryAdmins(): StoredAdminRow[] {
   loadDurableStoreOnce();
   if (!globalStore._anaguMemoryAdmins) {
-    globalStore._anaguMemoryAdmins = SEED_ADMINS.map((a) => ({
-      ...a,
-      password_hash: a.password_hash || hashPassword('anagu-admin', 'anagu_salt_admin_01')
-    }));
+    if (isDemoAccountsEnabled()) {
+      globalStore._anaguMemoryAdmins = SEED_ADMINS.map((a) => ({
+        ...a,
+        password_hash: a.password_hash || hashPassword('anagu-admin', 'anagu_salt_admin_01')
+      }));
+    } else {
+      globalStore._anaguMemoryAdmins = [];
+    }
   }
   return globalStore._anaguMemoryAdmins;
 }
@@ -405,7 +432,9 @@ function getMemoryAdmins(): StoredAdminRow[] {
 function getMemoryUsers(): StoredUserRow[] {
   loadDurableStoreOnce();
   if (!globalStore._anaguMemoryUsers) {
-    globalStore._anaguMemoryUsers = SEED_USERS.map((u) => ({ ...u }));
+    globalStore._anaguMemoryUsers = isDemoAccountsEnabled()
+      ? SEED_USERS.map((u) => ({ ...u }))
+      : [];
   }
   return globalStore._anaguMemoryUsers;
 }
@@ -435,11 +464,13 @@ function getMemoryInquiries(): Array<InquiryInput & { id: string; createdAt: str
 }
 
 export function isDatabaseConfigured(): boolean {
+  if (isMemoryOnlyTestMode()) return false;
   const url = (process.env.DATABASE_URL || '').trim();
   return url.length > 0 && !url.includes('[YOUR-PASSWORD]') && !url.includes('MY_DATABASE_URL');
 }
 
 export function isSupabaseRestConfigured(): boolean {
+  if (isMemoryOnlyTestMode()) return false;
   const url = (process.env.SUPABASE_URL || '').trim();
   const key = (process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
   return url.startsWith('https://') && key.length > 10 && !url.includes('[PROJECT-REF]');
@@ -457,6 +488,25 @@ class SupabaseTableMissingError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'SupabaseTableMissingError';
+  }
+}
+
+export class SpatialMigrationRequiredError extends Error {
+  constructor(
+    message = 'PostGIS spatial RPC functions are not installed yet. Run supabase/migrations/001_postgis_spatial.sql in Supabase SQL Editor.'
+  ) {
+    super(message);
+    this.name = 'SpatialMigrationRequiredError';
+  }
+}
+
+export class SpatialVerificationFailedError extends Error {
+  spatial: SpatialVerificationResult;
+
+  constructor(message: string, spatial: SpatialVerificationResult) {
+    super(message);
+    this.name = 'SpatialVerificationFailedError';
+    this.spatial = spatial;
   }
 }
 
@@ -576,6 +626,39 @@ async function supabaseRest<T>(
   return parsed as T;
 }
 
+async function supabaseRpc<T>(fnName: string, params: Record<string, unknown>): Promise<T> {
+  const cfg = getSupabaseConfig();
+  if (!cfg) {
+    throw new Error('Supabase REST configuration is not set.');
+  }
+  const res = await fetch(`${cfg.url}/rest/v1/rpc/${encodeURIComponent(fnName)}`, {
+    method: 'POST',
+    headers: {
+      apikey: cfg.key,
+      Authorization: `Bearer ${cfg.key}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(params),
+    signal: AbortSignal.timeout(8000)
+  });
+
+  const text = await res.text();
+  const parsed = text ? JSON.parse(text) : null;
+
+  if (!res.ok) {
+    const code = parsed?.code;
+    const msg = String(parsed?.message || parsed?.error || `Supabase RPC error (${res.status})`);
+    if (res.status === 404 || code === 'PGRST202' || code === '42883') {
+      throw new SpatialMigrationRequiredError(
+        `PostGIS RPC "${fnName}" is not installed in Supabase yet. Apply supabase/migrations/001_postgis_spatial.sql first.`
+      );
+    }
+    throw new Error(msg);
+  }
+
+  return parsed as T;
+}
+
 function shouldUseSsl(connectionString: string): boolean {
   const lower = connectionString.toLowerCase();
   if (lower.includes('sslmode=disable')) return false;
@@ -617,14 +700,22 @@ export function hashPassword(password: string, existingSalt?: string): string {
 }
 
 export function verifyPassword(password: string, storedHash: string): boolean {
+  if (typeof password !== 'string' || typeof storedHash !== 'string') return false;
   const parts = storedHash.split(':');
   if (parts.length !== 2) return false;
   const [salt, originalHex] = parts;
-  const derivedHex = crypto.scryptSync(password, salt, 64).toString('hex');
-  const a = Buffer.from(originalHex, 'hex');
-  const b = Buffer.from(derivedHex, 'hex');
-  if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(a, b);
+  if (!salt || !originalHex || !/^[a-f0-9]+$/i.test(originalHex) || originalHex.length % 2 !== 0) {
+    return false;
+  }
+  try {
+    const derivedHex = crypto.scryptSync(password, salt, 64).toString('hex');
+    const a = Buffer.from(originalHex, 'hex');
+    const b = Buffer.from(derivedHex, 'hex');
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
 }
 
 function mapUserRow(row: StoredUserRow): AuthUser {
@@ -871,48 +962,50 @@ async function ensureSchema(pool: Pool): Promise<void> {
         CREATE INDEX IF NOT EXISTS idx_anagu_admins_email ON public.anagu_admins (LOWER(email));
       `);
 
-      const defaultAdminHash = hashPassword('anagu-admin', 'anagu_salt_admin_01');
-      for (const admin of SEED_ADMINS) {
-        await pool.query(
-          `
-          INSERT INTO public.anagu_admins (
-            id, full_name, email, phone, department, state_jurisdiction, password_hash, created_at
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-          ON CONFLICT (id) DO NOTHING
-          `,
-          [
-            admin.id,
-            admin.full_name,
-            admin.email,
-            admin.phone,
-            admin.department,
-            admin.state_jurisdiction,
-            defaultAdminHash,
-            admin.created_at
-          ]
-        );
-      }
+      if (isDemoAccountsEnabled()) {
+        const defaultAdminHash = hashPassword('anagu-admin', 'anagu_salt_admin_01');
+        for (const admin of SEED_ADMINS) {
+          await pool.query(
+            `
+            INSERT INTO public.anagu_admins (
+              id, full_name, email, phone, department, state_jurisdiction, password_hash, created_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (id) DO NOTHING
+            `,
+            [
+              admin.id,
+              admin.full_name,
+              admin.email,
+              admin.phone,
+              admin.department,
+              admin.state_jurisdiction,
+              defaultAdminHash,
+              admin.created_at
+            ]
+          );
+        }
 
-      for (const user of SEED_USERS) {
-        await pool.query(
-          `
-          INSERT INTO public.anagu_users (
-            id, full_name, email, phone, role, state_jurisdiction, credential_id, password_hash, created_at
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-          ON CONFLICT (id) DO NOTHING
-          `,
-          [
-            user.id,
-            user.full_name,
-            user.email,
-            user.phone,
-            user.role,
-            user.state_jurisdiction,
-            user.credential_id,
-            user.password_hash,
-            user.created_at
-          ]
-        );
+        for (const user of SEED_USERS) {
+          await pool.query(
+            `
+            INSERT INTO public.anagu_users (
+              id, full_name, email, phone, role, state_jurisdiction, credential_id, password_hash, created_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ON CONFLICT (id) DO NOTHING
+            `,
+            [
+              user.id,
+              user.full_name,
+              user.email,
+              user.phone,
+              user.role,
+              user.state_jurisdiction,
+              user.credential_id,
+              user.password_hash,
+              user.created_at
+            ]
+          );
+        }
       }
 
       for (const p of SEED_PARCELS) {
@@ -1138,49 +1231,490 @@ export async function createParcel(parcel: ParcelRecord, userId?: string): Promi
   return parcel;
 }
 
-export async function updateParcelSpatial(parcelId: string): Promise<ParcelRecord | null> {
+function normalizeRingLngLat(coords: [number, number][] | undefined): Array<[number, number]> | null {
+  if (!Array.isArray(coords) || coords.length < 3) return null;
+  const pts: Array<[number, number]> = [];
+  for (const pair of coords) {
+    if (
+      !Array.isArray(pair) ||
+      pair.length < 2 ||
+      typeof pair[0] !== 'number' ||
+      typeof pair[1] !== 'number' ||
+      !Number.isFinite(pair[0]) ||
+      !Number.isFinite(pair[1]) ||
+      pair[0] < -90 ||
+      pair[0] > 90 ||
+      pair[1] < -180 ||
+      pair[1] > 180
+    ) {
+      return null;
+    }
+    const prev = pts[pts.length - 1];
+    if (prev && prev[0] === pair[1] && prev[1] === pair[0]) continue;
+    pts.push([pair[1], pair[0]]); // [lng, lat]
+  }
+  if (pts.length < 3) return null;
+  const first = pts[0];
+  const last = pts[pts.length - 1];
+  if (first[0] !== last[0] || first[1] !== last[1]) {
+    pts.push([first[0], first[1]]);
+  }
+  return pts.length >= 4 ? pts : null;
+}
+
+function projectToLocalMeters(
+  ring: Array<[number, number]>,
+  originLng: number,
+  originLat: number
+): Array<[number, number]> {
+  const cosLat = Math.cos((originLat * Math.PI) / 180);
+  const mPerDegLat = 111320;
+  const mPerDegLng = 111320 * cosLat;
+  return ring.map(([lng, lat]) => [(lng - originLng) * mPerDegLng, (lat - originLat) * mPerDegLat]);
+}
+
+function polygonSignedArea(ring: Array<[number, number]>): number {
+  let sum = 0;
+  for (let i = 0; i < ring.length - 1; i++) {
+    sum += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
+  }
+  return sum / 2;
+}
+
+function polygonPerimeter(ring: Array<[number, number]>): number {
+  let perim = 0;
+  for (let i = 0; i < ring.length - 1; i++) {
+    const dx = ring[i + 1][0] - ring[i][0];
+    const dy = ring[i + 1][1] - ring[i][1];
+    perim += Math.hypot(dx, dy);
+  }
+  return perim;
+}
+
+function segmentsProperlyIntersect(
+  a1: [number, number],
+  a2: [number, number],
+  b1: [number, number],
+  b2: [number, number]
+): boolean {
+  const orient = (p: [number, number], q: [number, number], r: [number, number]) =>
+    (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+  const d1 = orient(a1, a2, b1);
+  const d2 = orient(a1, a2, b2);
+  const d3 = orient(b1, b2, a1);
+  const d4 = orient(b1, b2, a2);
+  const eps = 1e-9;
+  return ((d1 > eps && d2 < -eps) || (d1 < -eps && d2 > eps)) &&
+    ((d3 > eps && d4 < -eps) || (d3 < -eps && d4 > eps));
+}
+
+function isSelfIntersectingRing(ring: Array<[number, number]>): boolean {
+  const edgeCount = ring.length - 1;
+  for (let i = 0; i < edgeCount; i++) {
+    for (let j = i + 2; j < edgeCount; j++) {
+      if (i === 0 && j === edgeCount - 1) continue;
+      if (segmentsProperlyIntersect(ring[i], ring[i + 1], ring[j], ring[j + 1])) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function pointToSegmentDist(p: [number, number], a: [number, number], b: [number, number]): number {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return Math.hypot(p[0] - a[0], p[1] - a[1]);
+  const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / lenSq));
+  return Math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy));
+}
+
+function pointStrictlyInsidePolygon(pt: [number, number], ring: Array<[number, number]>): boolean {
+  for (let i = 0; i < ring.length - 1; i++) {
+    if (pointToSegmentDist(pt, ring[i], ring[i + 1]) < 1e-4) return false;
+  }
+  let inside = false;
+  for (let i = 0, j = ring.length - 2; i < ring.length - 1; j = i++) {
+    const xi = ring[i][0];
+    const yi = ring[i][1];
+    const xj = ring[j][0];
+    const yj = ring[j][1];
+    const intersect = yi > pt[1] !== yj > pt[1] && pt[0] < ((xj - xi) * (pt[1] - yi)) / (yj - yi) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function ringsMinDistanceMeters(a: Array<[number, number]>, b: Array<[number, number]>): number {
+  let minD = Infinity;
+  for (let i = 0; i < a.length - 1; i++) {
+    for (let j = 0; j < b.length - 1; j++) {
+      if (segmentsProperlyIntersect(a[i], a[i + 1], b[j], b[j + 1])) return 0;
+      minD = Math.min(
+        minD,
+        pointToSegmentDist(a[i], b[j], b[j + 1]),
+        pointToSegmentDist(b[j], a[i], a[i + 1])
+      );
+    }
+  }
+  return minD;
+}
+
+function evaluateParcelSpatialInMemory(
+  parcelId: string,
+  bufferMeters: number,
+  enforceBuffer: boolean,
+  persist: boolean
+): { parcel: ParcelRecord | null; spatial: SpatialVerificationResult } {
+  const started = Date.now();
+  const clampedBuffer = Math.min(Math.max(Number.isFinite(bufferMeters) ? bufferMeters : 0.5, 0), 500);
+  const list = getMemoryParcels();
+  const target = list.find((p) => p.id === parcelId);
+
+  if (!target) {
+    return {
+      parcel: null,
+      spatial: {
+        found: false,
+        engine: 'memory_test',
+        parcelId,
+        srid: 4326,
+        bufferMeters: clampedBuffer,
+        enforceBuffer,
+        hasGeometry: false,
+        isValid: false,
+        validReason: 'Parcel not found.',
+        vertexCount: 0,
+        computedAreaSqm: null,
+        computedPerimeterM: null,
+        centroidLat: null,
+        centroidLng: null,
+        hasTrueOverlap: false,
+        trueOverlapCount: 0,
+        boundaryContactCount: 0,
+        bufferBreachCount: 0,
+        trueOverlaps: [],
+        boundaryContacts: [],
+        bufferBreaches: [],
+        passed: false,
+        persisted: false,
+        queryDurationMs: Math.max(Date.now() - started, 1),
+        error: 'Parcel not found.'
+      }
+    };
+  }
+
+  const targetRing = normalizeRingLngLat(target.coordinates);
+  if (!targetRing) {
+    return {
+      parcel: target,
+      spatial: {
+        found: true,
+        engine: 'memory_test',
+        parcelId,
+        srid: 4326,
+        bufferMeters: clampedBuffer,
+        enforceBuffer,
+        hasGeometry: false,
+        isValid: false,
+        validReason: 'Parcel has no valid polygon geometry (minimum 3 valid [lat, lng] vertices required)',
+        vertexCount: 0,
+        computedAreaSqm: null,
+        computedPerimeterM: null,
+        centroidLat: null,
+        centroidLng: null,
+        hasTrueOverlap: false,
+        trueOverlapCount: 0,
+        boundaryContactCount: 0,
+        bufferBreachCount: 0,
+        trueOverlaps: [],
+        boundaryContacts: [],
+        bufferBreaches: [],
+        passed: false,
+        persisted: false,
+        status: target.status,
+        queryDurationMs: Math.max(Date.now() - started, 1)
+      }
+    };
+  }
+
+  const originLng = targetRing.slice(0, -1).reduce((s, p) => s + p[0], 0) / (targetRing.length - 1);
+  const originLat = targetRing.slice(0, -1).reduce((s, p) => s + p[1], 0) / (targetRing.length - 1);
+  const targetM = projectToLocalMeters(targetRing, originLng, originLat);
+  const areaSqm = Number(Math.abs(polygonSignedArea(targetM)).toFixed(2));
+  const perimeterM = Number(polygonPerimeter(targetM).toFixed(2));
+  const selfIntersects = isSelfIntersectingRing(targetM);
+  const isValid = !selfIntersects && areaSqm > 0.01;
+  const validReason = !isValid
+    ? selfIntersects
+      ? 'Self-intersection detected in polygon boundary'
+      : 'Degenerate zero-area polygon'
+    : 'Valid Geometry';
+
+  const trueOverlaps: SpatialConflictRecord[] = [];
+  const boundaryContacts: SpatialConflictRecord[] = [];
+  const bufferBreaches: SpatialConflictRecord[] = [];
+
+  if (isValid) {
+    for (const other of list) {
+      if (other.id === target.id || other.status === 'revoked' || other.status === 'rejected') {
+        continue;
+      }
+      const otherRing = normalizeRingLngLat(other.coordinates);
+      if (!otherRing) continue;
+      const otherM = projectToLocalMeters(otherRing, originLng, originLat);
+      if (isSelfIntersectingRing(otherM) || Math.abs(polygonSignedArea(otherM)) <= 0.01) continue;
+
+      const minDist = ringsMinDistanceMeters(targetM, otherM);
+      let hasProperCross = false;
+      for (let i = 0; i < targetM.length - 1 && !hasProperCross; i++) {
+        for (let j = 0; j < otherM.length - 1; j++) {
+          if (segmentsProperlyIntersect(targetM[i], targetM[i + 1], otherM[j], otherM[j + 1])) {
+            hasProperCross = true;
+            break;
+          }
+        }
+      }
+      const targetCentroid: [number, number] = [0, 0];
+      const otherCentroid: [number, number] = [
+        otherM.slice(0, -1).reduce((s, p) => s + p[0], 0) / (otherM.length - 1),
+        otherM.slice(0, -1).reduce((s, p) => s + p[1], 0) / (otherM.length - 1)
+      ];
+      const strictlyInside =
+        targetM.slice(0, -1).some((p) => pointStrictlyInsidePolygon(p, otherM)) ||
+        otherM.slice(0, -1).some((p) => pointStrictlyInsidePolygon(p, targetM)) ||
+        pointStrictlyInsidePolygon(targetCentroid, otherM) ||
+        pointStrictlyInsidePolygon(otherCentroid, targetM);
+
+      const identicalVertices =
+        targetM.length === otherM.length &&
+        targetM.slice(0, -1).every((pt) => otherM.some((o) => Math.hypot(pt[0] - o[0], pt[1] - o[1]) < 1e-4));
+
+      const isTrueOverlap = hasProperCross || strictlyInside || identicalVertices;
+      const isBoundaryContact = !isTrueOverlap && minDist < 1e-3;
+      const isBufferBreach = !isTrueOverlap && !isBoundaryContact && clampedBuffer > 0 && minDist <= clampedBuffer;
+
+      if (isTrueOverlap) {
+        trueOverlaps.push({
+          parcelId: other.id,
+          cadastralRef: other.cadastralRef,
+          status: other.status,
+          classification: 'true_overlap',
+          overlapAreaSqm: Number(Math.min(areaSqm, Math.abs(polygonSignedArea(otherM))).toFixed(2)),
+          bufferOverlapSqm: Number(Math.min(areaSqm, Math.abs(polygonSignedArea(otherM))).toFixed(2)),
+          distanceMeters: 0
+        });
+      } else if (isBoundaryContact) {
+        boundaryContacts.push({
+          parcelId: other.id,
+          cadastralRef: other.cadastralRef,
+          status: other.status,
+          classification: 'boundary_contact',
+          overlapAreaSqm: 0,
+          bufferOverlapSqm: 0,
+          distanceMeters: 0
+        });
+      } else if (isBufferBreach) {
+        bufferBreaches.push({
+          parcelId: other.id,
+          cadastralRef: other.cadastralRef,
+          status: other.status,
+          classification: 'buffer_breach',
+          overlapAreaSqm: 0,
+          bufferOverlapSqm: 0,
+          distanceMeters: Number(minDist.toFixed(4))
+        });
+      }
+    }
+  }
+
+  const passed = isValid && trueOverlaps.length === 0 && (!enforceBuffer || bufferBreaches.length === 0);
+  if (persist && passed) {
+    target.status = 'spatial_verified';
+    saveDurableStore();
+  }
+
+  return {
+    parcel: target,
+    spatial: {
+      found: true,
+      engine: 'memory_test',
+      parcelId,
+      srid: 4326,
+      bufferMeters: clampedBuffer,
+      enforceBuffer,
+      hasGeometry: true,
+      isValid,
+      validReason,
+      vertexCount: targetRing.length - 1,
+      computedAreaSqm: isValid ? areaSqm : null,
+      computedPerimeterM: isValid ? perimeterM : null,
+      centroidLat: isValid ? Number(originLat.toFixed(6)) : null,
+      centroidLng: isValid ? Number(originLng.toFixed(6)) : null,
+      hasTrueOverlap: trueOverlaps.length > 0,
+      trueOverlapCount: trueOverlaps.length,
+      boundaryContactCount: boundaryContacts.length,
+      bufferBreachCount: bufferBreaches.length,
+      trueOverlaps,
+      boundaryContacts,
+      bufferBreaches,
+      passed,
+      persisted: persist && passed,
+      status: target.status,
+      queryDurationMs: Math.max(Date.now() - started, 1)
+    }
+  };
+}
+
+export async function verifyParcelSpatial(
+  parcelId: string,
+  options?: { bufferMeters?: number; enforceBuffer?: boolean; persist?: boolean }
+): Promise<{ parcel: ParcelRecord | null; spatial: SpatialVerificationResult }> {
+  const bufferMeters =
+    typeof options?.bufferMeters === 'number' && Number.isFinite(options.bufferMeters)
+      ? Math.min(Math.max(options.bufferMeters, 0), 500)
+      : 0.5;
+  const enforceBuffer = Boolean(options?.enforceBuffer);
+  const persist = Boolean(options?.persist);
+
   const pool = getPool();
   if (pool) {
     try {
       await ensureSchema(pool);
-      const res = await pool.query<StoredParcelRow>(
-        `
-        UPDATE public.anagu_parcels
-        SET status = 'spatial_verified', updated_at = NOW()
-        WHERE id = $1
-        RETURNING *
-        `,
+      const res = await pool.query<{ result: SpatialVerificationResult }>(
+        `SELECT public.anagu_verify_parcel_spatial($1, $2, $3, $4) AS result`,
+        [parcelId, bufferMeters, enforceBuffer, persist]
+      );
+      const spatial = res.rows[0]?.result;
+      if (!spatial || !spatial.found) {
+        return {
+          parcel: null,
+          spatial: spatial || {
+            found: false,
+            engine: 'postgis',
+            parcelId,
+            srid: 4326,
+            bufferMeters,
+            enforceBuffer,
+            hasGeometry: false,
+            isValid: false,
+            validReason: 'Parcel not found.',
+            vertexCount: 0,
+            computedAreaSqm: null,
+            computedPerimeterM: null,
+            centroidLat: null,
+            centroidLng: null,
+            hasTrueOverlap: false,
+            trueOverlapCount: 0,
+            boundaryContactCount: 0,
+            bufferBreachCount: 0,
+            trueOverlaps: [],
+            boundaryContacts: [],
+            bufferBreaches: [],
+            passed: false,
+            persisted: false,
+            queryDurationMs: 1
+          }
+        };
+      }
+      const parcelRes = await pool.query<StoredParcelRow>(
+        `SELECT * FROM public.anagu_parcels WHERE id = $1 LIMIT 1`,
         [parcelId]
       );
-      return res.rows[0] ? mapParcelRow(res.rows[0]) : null;
+      return {
+        parcel: parcelRes.rows[0] ? mapParcelRow(parcelRes.rows[0]) : null,
+        spatial
+      };
     } catch (err) {
+      const code = (err as { code?: string })?.code;
+      if (code === '42883') {
+        throw new SpatialMigrationRequiredError(
+          'PostGIS spatial RPC functions are not installed yet. Run supabase/migrations/001_postgis_spatial.sql first.'
+        );
+      }
       if (!isTransientConnectionError(err)) throw err;
-      tripPgCircuit(err, 'updateParcelSpatial');
+      tripPgCircuit(err, 'verifyParcelSpatial');
     }
   }
 
   if (isSupabaseRestConfigured()) {
-    try {
-      const rows = await supabaseRest<StoredParcelRow[]>(
-        `anagu_parcels?id=eq.${encodeURIComponent(parcelId)}`,
-        {
-          method: 'PATCH',
-          prefer: 'return=representation',
-          body: { status: 'spatial_verified' }
+    const spatial = await supabaseRpc<SpatialVerificationResult>('anagu_verify_parcel_spatial', {
+      p_parcel_id: parcelId,
+      p_buffer_meters: bufferMeters,
+      p_enforce_buffer: enforceBuffer,
+      p_persist_verification: persist
+    });
+    if (!spatial || !spatial.found) {
+      return {
+        parcel: null,
+        spatial: spatial || {
+          found: false,
+          engine: 'postgis',
+          parcelId,
+          srid: 4326,
+          bufferMeters,
+          enforceBuffer,
+          hasGeometry: false,
+          isValid: false,
+          validReason: 'Parcel not found.',
+          vertexCount: 0,
+          computedAreaSqm: null,
+          computedPerimeterM: null,
+          centroidLat: null,
+          centroidLng: null,
+          hasTrueOverlap: false,
+          trueOverlapCount: 0,
+          boundaryContactCount: 0,
+          bufferBreachCount: 0,
+          trueOverlaps: [],
+          boundaryContacts: [],
+          bufferBreaches: [],
+          passed: false,
+          persisted: false,
+          queryDurationMs: 1
         }
-      );
-      return rows[0] ? mapParcelRow(rows[0]) : null;
-    } catch (err) {
-      if (!shouldFallbackFromSupabase(err, 'updateParcelSpatial')) throw err;
+      };
     }
+    const rows = await supabaseRest<StoredParcelRow[]>(
+      `anagu_parcels?select=*&id=eq.${encodeURIComponent(parcelId)}&limit=1`
+    );
+    return {
+      parcel: rows[0] ? mapParcelRow(rows[0]) : null,
+      spatial
+    };
   }
 
-  const list = getMemoryParcels();
-  const found = list.find((p) => p.id === parcelId);
-  if (!found) return null;
-  found.status = 'spatial_verified';
-  saveDurableStore();
-  return found;
+  if (isMemoryOnlyTestMode()) {
+    return evaluateParcelSpatialInMemory(parcelId, bufferMeters, enforceBuffer, persist);
+  }
+
+  throw new SpatialMigrationRequiredError(
+    'PostGIS spatial verification requires an active Supabase/PostgreSQL connection with supabase/migrations/001_postgis_spatial.sql applied.'
+  );
+}
+
+export async function updateParcelSpatial(
+  parcelId: string,
+  options?: { bufferMeters?: number; enforceBuffer?: boolean }
+): Promise<{ parcel: ParcelRecord | null; spatial: SpatialVerificationResult }> {
+  const result = await verifyParcelSpatial(parcelId, {
+    bufferMeters: options?.bufferMeters,
+    enforceBuffer: options?.enforceBuffer,
+    persist: true
+  });
+  if (!result.parcel || !result.spatial.found) {
+    return result;
+  }
+  if (!result.spatial.passed) {
+    const reason = !result.spatial.isValid
+      ? `Invalid parcel polygon geometry: ${result.spatial.validReason}`
+      : result.spatial.hasTrueOverlap
+        ? `Spatial overlap detected with ${result.spatial.trueOverlapCount} existing active parcel(s).`
+        : `Buffer clearance violation (${result.spatial.bufferMeters}m) with ${result.spatial.bufferBreachCount} neighboring parcel(s).`;
+    throw new SpatialVerificationFailedError(reason, result.spatial);
+  }
+  return result;
 }
 
 export async function recordOracleAttestation(
@@ -1567,7 +2101,7 @@ export async function signupUser(input: SignupInput): Promise<{ user?: AuthUser;
           input.fullName.trim(),
           normalizedEmail,
           input.phone.trim(),
-          input.role,
+          'citizen',
           input.state,
           input.credentialId.trim(),
           passwordHash
@@ -1600,7 +2134,7 @@ export async function signupUser(input: SignupInput): Promise<{ user?: AuthUser;
           full_name: input.fullName.trim(),
           email: normalizedEmail,
           phone: input.phone.trim(),
-          role: input.role,
+          role: 'citizen',
           state_jurisdiction: input.state,
           credential_id: input.credentialId.trim(),
           password_hash: passwordHash
@@ -1621,7 +2155,7 @@ export async function signupUser(input: SignupInput): Promise<{ user?: AuthUser;
     full_name: input.fullName.trim(),
     email: normalizedEmail,
     phone: input.phone.trim(),
-    role: input.role,
+    role: 'citizen',
     state_jurisdiction: input.state,
     credential_id: input.credentialId.trim(),
     password_hash: passwordHash,
@@ -1630,6 +2164,37 @@ export async function signupUser(input: SignupInput): Promise<{ user?: AuthUser;
   users.unshift(row);
   saveDurableStore();
   return { user: mapUserRow(row) };
+}
+
+export async function getUserById(userId: string): Promise<AuthUser | null> {
+  const pool = getPool();
+  if (pool) {
+    try {
+      await ensureSchema(pool);
+      const res = await pool.query<StoredUserRow>(
+        `SELECT * FROM public.anagu_users WHERE id = $1 LIMIT 1`,
+        [userId]
+      );
+      return res.rows[0] ? mapUserRow(res.rows[0]) : null;
+    } catch (err) {
+      if (!isTransientConnectionError(err)) throw err;
+      tripPgCircuit(err, 'getUserById');
+    }
+  }
+
+  if (isSupabaseRestConfigured()) {
+    try {
+      const rows = await supabaseRest<StoredUserRow[]>(
+        `anagu_users?select=*&id=eq.${encodeURIComponent(userId)}&limit=1`
+      );
+      return rows[0] ? mapUserRow(rows[0]) : null;
+    } catch (err) {
+      if (!shouldFallbackFromSupabase(err, 'getUserById')) throw err;
+    }
+  }
+
+  const found = getMemoryUsers().find((u) => u.id === userId);
+  return found ? mapUserRow(found) : null;
 }
 
 export async function loginUser(
@@ -1647,11 +2212,8 @@ export async function loginUser(
         [normalizedEmail]
       );
       const found = res.rows[0];
-      if (!found) {
-        return { error: 'No Anagu account was found for that email. Switch to Create Account to register.' };
-      }
-      if (!verifyPassword(password, found.password_hash)) {
-        return { error: 'Incorrect password. Please check your password or use a verified sample profile below.' };
+      if (!found || !verifyPassword(password, found.password_hash)) {
+        return { error: 'Invalid email or password.' };
       }
       return { user: mapUserRow(found) };
     } catch (err) {
@@ -1671,11 +2233,8 @@ export async function loginUser(
         );
       }
       const found = rows.find((u) => u.email.trim().toLowerCase() === normalizedEmail);
-      if (!found) {
-        return { error: 'No Anagu account was found for that email. Switch to Create Account to register.' };
-      }
-      if (!verifyPassword(password, found.password_hash)) {
-        return { error: 'Incorrect password. Please check your password or use a verified sample profile below.' };
+      if (!found || !verifyPassword(password, found.password_hash)) {
+        return { error: 'Invalid email or password.' };
       }
       return { user: mapUserRow(found) };
     } catch (err) {
@@ -1684,11 +2243,8 @@ export async function loginUser(
   }
 
   const found = getMemoryUsers().find((u) => u.email.toLowerCase() === normalizedEmail);
-  if (!found) {
-    return { error: 'No Anagu account was found for that email. Switch to Create Account to register.' };
-  }
-  if (!verifyPassword(password, found.password_hash)) {
-    return { error: 'Incorrect password. Please check your password or use a verified sample profile below.' };
+  if (!found || !verifyPassword(password, found.password_hash)) {
+    return { error: 'Invalid email or password.' };
   }
   return { user: mapUserRow(found) };
 }
@@ -1853,11 +2409,8 @@ export async function loginAdmin(
         [normalizedEmail]
       );
       const found = res.rows[0];
-      if (!found) {
-        return { error: 'No admin account was found for that email. Switch to Sign Up to register an admin.' };
-      }
-      if (!verifyPassword(password, found.password_hash)) {
-        return { error: 'Incorrect admin password.' };
+      if (!found || !verifyPassword(password, found.password_hash)) {
+        return { error: 'Invalid admin email or password.' };
       }
       return { admin: mapAdminRow(found) };
     } catch (err) {
@@ -1877,11 +2430,8 @@ export async function loginAdmin(
         );
       }
       const found = rows.find((a) => a.email.trim().toLowerCase() === normalizedEmail);
-      if (!found) {
-        return { error: 'No admin account was found for that email. Switch to Sign Up to register an admin.' };
-      }
-      if (!verifyPassword(password, found.password_hash)) {
-        return { error: 'Incorrect admin password.' };
+      if (!found || !verifyPassword(password, found.password_hash)) {
+        return { error: 'Invalid admin email or password.' };
       }
       return { admin: mapAdminRow(found) };
     } catch (err) {
@@ -1890,11 +2440,8 @@ export async function loginAdmin(
   }
 
   const found = getMemoryAdmins().find((a) => a.email.toLowerCase() === normalizedEmail);
-  if (!found) {
-    return { error: 'No admin account was found for that email. Switch to Sign Up to register an admin.' };
-  }
-  if (!verifyPassword(password, found.password_hash)) {
-    return { error: 'Incorrect admin password.' };
+  if (!found || !verifyPassword(password, found.password_hash)) {
+    return { error: 'Invalid admin email or password.' };
   }
   return { admin: mapAdminRow(found) };
 }

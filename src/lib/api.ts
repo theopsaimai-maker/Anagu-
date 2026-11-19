@@ -3,12 +3,22 @@ import type {
   AuthUser,
   MqttMessage,
   ParcelRecord,
-  RevocationGround
+  RevocationGround,
+  SpatialVerificationResult
 } from '../types/anagu';
 import { buildApiUrl, getCandidateApiBases, setResolvedApiBase } from './apiBase';
 import { saveInquiryToFirestore } from './firestoreRegistry';
 
 const USER_TOKEN_KEY = 'anagu_user_token_v1';
+
+export function getUserSessionToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return localStorage.getItem(USER_TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
 
 export function clearUserSessionToken(): void {
   if (typeof window === 'undefined') return;
@@ -31,11 +41,13 @@ function saveUserSessionToken(token?: string): void {
 function getActiveBearerToken(): string | null {
   if (typeof window === 'undefined') return null;
   try {
-    return (
-      localStorage.getItem(USER_TOKEN_KEY) ||
-      localStorage.getItem('anagu_admin_token_v1') ||
-      null
-    );
+    const userToken = localStorage.getItem(USER_TOKEN_KEY);
+    if (userToken) return userToken;
+    const adminToken = localStorage.getItem('anagu_admin_token_v1');
+    if (adminToken && adminToken !== 'firebase-cloud-session' && !adminToken.startsWith('local-admin-')) {
+      return adminToken;
+    }
+    return null;
   } catch {
     return null;
   }
@@ -110,12 +122,12 @@ async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
       try {
         const res = await fetch(buildApiUrl(url, base), {
           cache: 'no-store',
+          ...options,
           headers: {
             'Content-Type': 'application/json',
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
             ...(options?.headers || {})
-          },
-          ...options
+          }
         });
         if (attempt === 0 && (res.status === 502 || res.status === 503 || res.status === 504)) {
           await new Promise((r) => setTimeout(r, 350));
@@ -193,16 +205,24 @@ export async function apiSignup(payload: {
   fullName: string;
   email: string;
   phone: string;
-  role: AccessRoleId;
+  role?: AccessRoleId;
   state: string;
   credentialId: string;
   password: string;
 }): Promise<AuthUser> {
   const data = await requestJson<{ user: AuthUser; token?: string }>('/api/auth/signup', {
     method: 'POST',
-    body: JSON.stringify(payload)
+    body: JSON.stringify({
+      ...payload,
+      role: 'citizen'
+    })
   });
   saveUserSessionToken(data.token);
+  return data.user;
+}
+
+export async function apiGetMe(): Promise<AuthUser> {
+  const data = await requestJson<{ user: AuthUser }>('/api/auth/me');
   return data.user;
 }
 
@@ -228,11 +248,36 @@ export async function apiCreateParcel(parcel: ParcelRecord, userId?: string): Pr
   return data.parcel;
 }
 
-export async function apiApproveSpatial(parcelId: string): Promise<ParcelRecord> {
-  const data = await requestJson<{ parcel: ParcelRecord }>(`/api/parcels/${encodeURIComponent(parcelId)}/spatial`, {
-    method: 'PATCH',
-    body: JSON.stringify({})
-  });
+export async function apiAnalyzeSpatial(
+  parcelId: string,
+  options?: { bufferMeters?: number; enforceBuffer?: boolean }
+): Promise<{ parcel: ParcelRecord; spatial: SpatialVerificationResult }> {
+  return requestJson<{ parcel: ParcelRecord; spatial: SpatialVerificationResult }>(
+    `/api/parcels/${encodeURIComponent(parcelId)}/spatial/analyze`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        bufferMeters: options?.bufferMeters ?? 0.5,
+        enforceBuffer: Boolean(options?.enforceBuffer)
+      })
+    }
+  );
+}
+
+export async function apiApproveSpatial(
+  parcelId: string,
+  options?: { bufferMeters?: number; enforceBuffer?: boolean }
+): Promise<ParcelRecord> {
+  const data = await requestJson<{ parcel: ParcelRecord; spatial?: SpatialVerificationResult }>(
+    `/api/parcels/${encodeURIComponent(parcelId)}/spatial`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({
+        bufferMeters: options?.bufferMeters ?? 0.5,
+        enforceBuffer: Boolean(options?.enforceBuffer)
+      })
+    }
+  );
   return data.parcel;
 }
 

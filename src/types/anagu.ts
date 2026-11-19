@@ -46,6 +46,45 @@ export interface ParcelRecord {
   };
 }
 
+export interface SpatialConflictRecord {
+  parcelId: string;
+  cadastralRef: string;
+  status: string;
+  classification: 'true_overlap' | 'boundary_contact' | 'buffer_breach';
+  overlapAreaSqm: number;
+  bufferOverlapSqm: number;
+  distanceMeters: number;
+}
+
+export interface SpatialVerificationResult {
+  found: boolean;
+  engine: 'postgis' | 'memory_test';
+  parcelId: string;
+  srid: number;
+  bufferMeters: number;
+  enforceBuffer: boolean;
+  hasGeometry: boolean;
+  isValid: boolean;
+  validReason: string;
+  vertexCount: number;
+  computedAreaSqm: number | null;
+  computedPerimeterM: number | null;
+  centroidLat: number | null;
+  centroidLng: number | null;
+  hasTrueOverlap: boolean;
+  trueOverlapCount: number;
+  boundaryContactCount: number;
+  bufferBreachCount: number;
+  trueOverlaps: SpatialConflictRecord[];
+  boundaryContacts: SpatialConflictRecord[];
+  bufferBreaches: SpatialConflictRecord[];
+  passed: boolean;
+  persisted: boolean;
+  status?: ParcelRecord['status'];
+  queryDurationMs: number;
+  error?: string;
+}
+
 export interface MqttMessage {
   id: string;
   topic: 'land/registration/status' | 'land/title/issued' | 'land/title/revoked' | 'land/verification/oracle' | 'land/notification/titleholder';

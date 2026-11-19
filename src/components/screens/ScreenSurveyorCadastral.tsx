@@ -21,7 +21,10 @@ import { OpenStreetMapWidget } from '../maps/OpenStreetMapWidget';
 
 interface Props {
   parcels: ParcelRecord[];
-  onApproveSpatial: (parcelId: string) => void;
+  onApproveSpatial: (
+    parcelId: string,
+    options?: { bufferMeters?: number; enforceBuffer?: boolean }
+  ) => Promise<ParcelRecord> | void;
   onEmitMqtt: (topic: any, payload: any) => void;
   selectedParcelId?: string;
   onSelectParcelId?: (id: string) => void;
@@ -49,6 +52,8 @@ export const ScreenSurveyorCadastral: React.FC<Props> = ({
   const [isVerifying, setIsVerifying] = useState<boolean>(false);
   const [sqlExecuted, setSqlExecuted] = useState<boolean>(true);
   const [approvedNotification, setApprovedNotification] = useState<boolean>(false);
+  const [approvalError, setApprovalError] = useState<string | null>(null);
+  const [isApproving, setIsApproving] = useState<boolean>(false);
 
   // Interactive GIS Map Viewport & Layer Controls
   const [mapZoom, setMapZoom] = useState<number>(1);
@@ -76,17 +81,28 @@ export const ScreenSurveyorCadastral: React.FC<Props> = ({
     }, 500);
   };
 
-  const handleApprove = () => {
-    onApproveSpatial(activeParcel.id);
-    onEmitMqtt('land/registration/status', {
-      applicationId: activeParcel.id,
-      status: 'spatial_verified',
-      toleranceBufferM: toleranceBuffer,
-      postgisValid: true,
-      intersectsCollision: simulateCollision,
-      timestamp: new Date().toISOString()
-    });
-    setApprovedNotification(true);
+  const handleApprove = async () => {
+    setApprovalError(null);
+    setApprovedNotification(false);
+    setIsApproving(true);
+    try {
+      await onApproveSpatial(activeParcel.id, { bufferMeters: toleranceBuffer });
+      onEmitMqtt('land/registration/status', {
+        applicationId: activeParcel.id,
+        status: 'spatial_verified',
+        toleranceBufferM: toleranceBuffer,
+        postgisValid: true,
+        intersectsCollision: false,
+        timestamp: new Date().toISOString()
+      });
+      setApprovedNotification(true);
+    } catch (err) {
+      setApprovalError(
+        err instanceof Error ? err.message : 'Backend spatial verification failed.'
+      );
+    } finally {
+      setIsApproving(false);
+    }
   };
 
   const hasCollision = simulateCollision;
@@ -507,6 +523,12 @@ export const ScreenSurveyorCadastral: React.FC<Props> = ({
             </div>
 
             {/* Approval Decision Call to Action */}
+            {approvalError && (
+              <div className="mt-3 p-2.5 rounded-lg bg-red-950/70 border border-red-700/60 text-red-200 text-xs flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                <span>{approvalError}</span>
+              </div>
+            )}
             <div className="pt-4 border-t border-slate-800 flex flex-wrap items-center justify-between gap-3">
               {approvedNotification || ['spatial_verified', 'oracle_verified', 'legal_approved', 'registered'].includes(activeParcel.status) ? (
                 <div className="text-xs text-emerald-400 font-semibold flex items-center gap-1.5">
@@ -522,12 +544,12 @@ export const ScreenSurveyorCadastral: React.FC<Props> = ({
               <div className="flex items-center gap-2">
                 {!(activeParcel.status === 'spatial_verified' || activeParcel.status === 'oracle_verified' || activeParcel.status === 'registered') ? (
                   <button
-                    onClick={handleApprove}
-                    disabled={hasCollision}
+                    onClick={() => void handleApprove()}
+                    disabled={hasCollision || isApproving}
                     className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-500 text-white font-semibold text-xs rounded-lg shadow-sm transition-all flex items-center gap-2"
                   >
                     <ShieldCheck className="w-4 h-4" />
-                    Approve Spatial Cadastre
+                    {isApproving ? 'Verifying Spatial Cadastre...' : 'Approve Spatial Cadastre'}
                   </button>
                 ) : onNextStep ? (
                   <button

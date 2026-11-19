@@ -1,16 +1,23 @@
 import 'dotenv/config';
 import crypto from 'node:crypto';
 import dns from 'node:dns';
-import fs from 'node:fs';
-import path from 'node:path';
 import express from 'express';
 import type {
   AccessRoleId,
-  AdminUser,
   MqttMessage,
   ParcelRecord,
   RevocationGround
 } from '../src/types/anagu.ts';
+import {
+  isDemoAccountsEnabled,
+  isOriginAllowed,
+  signAdminToken,
+  signUserToken,
+  validateAuthConfig,
+  verifyAdminInviteCode,
+  verifyAdminToken,
+  verifyUserToken
+} from './auth.ts';
 import {
   adminDeleteParcel,
   adminSetParcelStatus,
@@ -20,6 +27,7 @@ import {
   deleteInquiry,
   deleteUser,
   getDatabaseHealth,
+  getUserById,
   listAdmins,
   listInquiries,
   listMqttMessages,
@@ -33,68 +41,25 @@ import {
   revokeParcelTitle,
   signupAdmin,
   signupUser,
+  SpatialMigrationRequiredError,
+  SpatialVerificationFailedError,
   updateParcelSpatial,
-  updateUserRole
+  updateUserRole,
+  verifyParcelSpatial
 } from './db.ts';
 
 dns.setDefaultResultOrder('ipv4first');
 
-const globalSecretStore = globalThis as unknown as {
-  _anaguRuntimeHmacSecret?: string;
+const globalRateStore = globalThis as unknown as {
   _anaguAuthRateMap?: Map<string, { count: number; resetAt: number }>;
 };
 
-function getSigningSecret(): string {
-  if (globalSecretStore._anaguRuntimeHmacSecret) {
-    return globalSecretStore._anaguRuntimeHmacSecret;
-  }
-
-  const configured =
-    process.env.ADMIN_TOKEN_SECRET?.trim() || process.env.SUPABASE_SECRET_KEY?.trim();
-  if (configured) {
-    globalSecretStore._anaguRuntimeHmacSecret = crypto
-      .createHash('sha256')
-      .update(`anagu:hmac:${configured}`)
-      .digest('hex');
-    return globalSecretStore._anaguRuntimeHmacSecret;
-  }
-
-  // Persist a cryptographically random secret on disk in .anagu-data so server restarts do not invalidate tokens
-  const secretDirs = [path.join(process.cwd(), '.anagu-data'), '/tmp'];
-  for (const dir of secretDirs) {
-    try {
-      fs.mkdirSync(dir, { recursive: true });
-      const secretFile = path.join(dir, '.hmac-secret');
-      if (fs.existsSync(secretFile)) {
-        const existing = fs.readFileSync(secretFile, 'utf8').trim();
-        if (/^[a-f0-9]{64}$/i.test(existing)) {
-          globalSecretStore._anaguRuntimeHmacSecret = existing;
-          return existing;
-        }
-      }
-      const generated = crypto.randomBytes(32).toString('hex');
-      fs.writeFileSync(secretFile, generated, { encoding: 'utf8', mode: 0o600 });
-      globalSecretStore._anaguRuntimeHmacSecret = generated;
-      return generated;
-    } catch {
-      // Try next writable directory
-    }
-  }
-
-  const dbFallback = process.env.DATABASE_URL?.trim();
-  if (dbFallback) {
-    globalSecretStore._anaguRuntimeHmacSecret = crypto
-      .createHash('sha256')
-      .update(`anagu:hmac:db:${dbFallback}`)
-      .digest('hex');
-    return globalSecretStore._anaguRuntimeHmacSecret;
-  }
-
-  globalSecretStore._anaguRuntimeHmacSecret = crypto.randomBytes(32).toString('hex');
-  return globalSecretStore._anaguRuntimeHmacSecret;
+export function resetRateLimitsForTests(): void {
+  globalRateStore._anaguAuthRateMap?.clear();
 }
 
 const ETH_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
+const PHONE_PATTERN = /^[+0-9()\-\s]{6,40}$/;
 const ALLOWED_MQTT_TOPICS: ReadonlySet<MqttMessage['topic']> = new Set([
   'land/registration/status',
   'land/verification/oracle',
@@ -107,11 +72,16 @@ const ADMIN_ONLY_MQTT_TOPICS: ReadonlySet<MqttMessage['topic']> = new Set([
   'land/title/revoked'
 ]);
 
-function checkAuthRateLimit(req: express.Request, scope: string, maxAttempts = 30, windowMs = 5 * 60 * 1000): boolean {
-  if (!globalSecretStore._anaguAuthRateMap) {
-    globalSecretStore._anaguAuthRateMap = new Map();
+function checkRateLimit(
+  req: express.Request,
+  scope: string,
+  maxAttempts = 30,
+  windowMs = 5 * 60 * 1000
+): boolean {
+  if (!globalRateStore._anaguAuthRateMap) {
+    globalRateStore._anaguAuthRateMap = new Map();
   }
-  const map = globalSecretStore._anaguAuthRateMap;
+  const map = globalRateStore._anaguAuthRateMap;
   const now = Date.now();
   if (map.size > 2000) {
     for (const [k, v] of map.entries()) {
@@ -154,125 +124,38 @@ function isSafeSnapshotUrl(url: unknown): url is string {
   );
 }
 
-function signAdminToken(admin: AdminUser): string {
-  const payload = {
-    scope: 'admin',
-    sub: admin.id,
-    email: admin.email,
-    fullName: admin.fullName,
-    department: admin.department,
-    state: admin.state,
-    exp: Date.now() + 24 * 60 * 60 * 1000
-  };
-  const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
-  const sig = crypto.createHmac('sha256', getSigningSecret()).update(encoded).digest('base64url');
-  return `${encoded}.${sig}`;
-}
-
-function verifyAdminToken(token: string): { sub: string; email: string; fullName: string } | null {
-  try {
-    const parts = token.split('.');
-    if (parts.length !== 2) return null;
-    const [encoded, sig] = parts;
-    const expectedSig = crypto
-      .createHmac('sha256', getSigningSecret())
-      .update(encoded)
-      .digest('base64url');
-    const a = Buffer.from(sig);
-    const b = Buffer.from(expectedSig);
-    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
-    const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as {
-      scope?: string;
-      sub?: string;
-      email?: string;
-      fullName?: string;
-      exp?: number;
-    };
-    if (
-      payload.scope !== 'admin' ||
-      !payload.sub ||
-      !payload.email ||
-      !payload.exp ||
-      Date.now() > payload.exp
-    ) {
-      return null;
-    }
-    return { sub: payload.sub, email: payload.email, fullName: payload.fullName || payload.email };
-  } catch {
-    return null;
-  }
-}
-
-function signUserToken(user: { id: string; email: string; role: AccessRoleId }): string {
-  const payload = {
-    scope: 'user',
-    sub: user.id,
-    email: user.email,
-    role: user.role,
-    exp: Date.now() + 24 * 60 * 60 * 1000
-  };
-  const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
-  const sig = crypto.createHmac('sha256', getSigningSecret()).update(encoded).digest('base64url');
-  return `${encoded}.${sig}`;
-}
-
-function verifyUserToken(
-  token: string
-): { sub: string; email: string; role: AccessRoleId } | null {
-  try {
-    const parts = token.split('.');
-    if (parts.length !== 2) return null;
-    const [encoded, sig] = parts;
-    const expectedSig = crypto
-      .createHmac('sha256', getSigningSecret())
-      .update(encoded)
-      .digest('base64url');
-    const a = Buffer.from(sig);
-    const b = Buffer.from(expectedSig);
-    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
-    const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as {
-      scope?: string;
-      sub?: string;
-      email?: string;
-      role?: AccessRoleId;
-      exp?: number;
-    };
-    if (
-      payload.scope !== 'user' ||
-      !payload.sub ||
-      !payload.email ||
-      !payload.role ||
-      !payload.exp ||
-      Date.now() > payload.exp
-    ) {
-      return null;
-    }
-    return { sub: payload.sub, email: payload.email, role: payload.role };
-  } catch {
-    return null;
-  }
+function extractBearerToken(req: express.Request): string {
+  const header = req.headers.authorization || '';
+  return header.startsWith('Bearer ') ? header.slice(7).trim() : '';
 }
 
 export function attachApiRoutes(app: express.Express): void {
+  validateAuthConfig();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '4mb' }));
 
-  // Security headers + CORS support for split-domain deployments
+  // Security headers
   app.use((_req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     next();
   });
 
+  // Strict CORS allowlist for /api routes
   app.use('/api', (req, res, next) => {
     const origin = req.headers.origin;
-    if (origin) {
-      res.setHeader('Access-Control-Allow-Origin', origin);
-      res.setHeader('Vary', 'Origin');
-    }
-    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+    res.setHeader('Vary', 'Origin');
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+
+    if (origin) {
+      if (!isOriginAllowed(origin, req.headers.host)) {
+        return res.status(403).json({ error: 'Origin not allowed by CORS policy.' });
+      }
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+    }
+
     if (req.method === 'OPTIONS') {
       return res.status(204).end();
     }
@@ -280,33 +163,86 @@ export function attachApiRoutes(app: express.Express): void {
   });
 
   const requireAdminAuth: express.RequestHandler = (req, res, next) => {
-    const header = req.headers.authorization || '';
-    const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
-    const decoded = token ? verifyAdminToken(token) : null;
-    if (!decoded) {
+    const token = extractBearerToken(req);
+    if (!token) {
       return res.status(401).json({ error: 'Admin authentication required. Please sign in.' });
+    }
+    const decoded = verifyAdminToken(token);
+    if (!decoded) {
+      if (verifyUserToken(token)) {
+        return res.status(403).json({ error: 'Administrator privileges are required for this action.' });
+      }
+      return res.status(401).json({ error: 'Invalid or expired administrator token. Please sign in again.' });
     }
     (req as express.Request & { adminSession?: typeof decoded }).adminSession = decoded;
     return next();
   };
 
+  const requireAuthenticated: express.RequestHandler = async (req, res, next) => {
+    const token = extractBearerToken(req);
+    if (!token) {
+      return res.status(401).json({ error: 'Authentication required. Please sign in.' });
+    }
+    const adminSession = verifyAdminToken(token);
+    if (adminSession) {
+      (req as express.Request & { adminSession?: typeof adminSession }).adminSession = adminSession;
+      (req as express.Request & { authActor?: { sub: string; isAdmin: boolean; role?: AccessRoleId } }).authActor = {
+        sub: adminSession.sub,
+        isAdmin: true
+      };
+      return next();
+    }
+    const userSession = verifyUserToken(token);
+    if (!userSession) {
+      return res.status(401).json({ error: 'Invalid or expired session token. Please sign in again.' });
+    }
+    try {
+      const dbUser = await getUserById(userSession.sub);
+      if (!dbUser) {
+        return res.status(401).json({ error: 'Account session is no longer valid. Please sign in again.' });
+      }
+      (req as express.Request & { authActor?: { sub: string; isAdmin: boolean; role: AccessRoleId } }).authActor = {
+        sub: dbUser.id,
+        isAdmin: false,
+        role: dbUser.role
+      };
+      return next();
+    } catch (err) {
+      console.error('[anagu/api] Auth lookup error:', err instanceof Error ? err.message : err);
+      return res.status(500).json({ error: 'Unable to verify account session.' });
+    }
+  };
+
   const requireRoleOrAdmin = (allowedRoles: AccessRoleId[]): express.RequestHandler => {
-    return (req, res, next) => {
-      const header = req.headers.authorization || '';
-      const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+    return async (req, res, next) => {
+      const token = extractBearerToken(req);
       if (!token) {
         return res.status(401).json({ error: 'Authentication required for this registry action.' });
       }
-      if (verifyAdminToken(token)) {
+      const adminSession = verifyAdminToken(token);
+      if (adminSession) {
+        (req as express.Request & { adminSession?: typeof adminSession }).adminSession = adminSession;
         return next();
       }
       const userSession = verifyUserToken(token);
-      if (!userSession || !allowedRoles.includes(userSession.role)) {
-        return res.status(403).json({
-          error: `Restricted action: requires ${allowedRoles.join(' or ')} or administrator authorization.`
-        });
+      if (!userSession) {
+        return res.status(401).json({ error: 'Invalid or expired session token. Please sign in again.' });
       }
-      return next();
+      try {
+        const dbUser = await getUserById(userSession.sub);
+        if (!dbUser) {
+          return res.status(401).json({ error: 'Account session is no longer valid. Please sign in again.' });
+        }
+        if (!allowedRoles.includes(dbUser.role)) {
+          return res.status(403).json({
+            error: `Restricted action: requires ${allowedRoles.join(' or ')} or administrator authorization.`
+          });
+        }
+        return next();
+      } catch (err) {
+        console.error('[anagu/api] Role verification error:', err instanceof Error ? err.message : err);
+        return res.status(500).json({ error: 'Unable to verify role authorization.' });
+      }
     };
   };
 
@@ -324,7 +260,7 @@ export function attachApiRoutes(app: express.Express): void {
   // Authentication Routes
   app.post('/api/auth/login', async (req, res) => {
     try {
-      if (!checkAuthRateLimit(req, 'user-login')) {
+      if (!checkRateLimit(req, 'user-login', 20, 5 * 60 * 1000)) {
         return res.status(429).json({ error: 'Too many sign-in attempts. Please wait a few minutes and try again.' });
       }
       const { email, password } = req.body ?? {};
@@ -351,7 +287,16 @@ export function attachApiRoutes(app: express.Express): void {
 
   app.post('/api/auth/signup', async (req, res) => {
     try {
+      if (!checkRateLimit(req, 'user-signup', 15, 15 * 60 * 1000)) {
+        return res.status(429).json({ error: 'Too many registration attempts. Please wait and try again.' });
+      }
       const { fullName, email, phone, role, state, credentialId, password } = req.body ?? {};
+      if (role !== undefined && role !== null && role !== '' && role !== 'citizen') {
+        return res.status(403).json({
+          error:
+            'Self-assignment of privileged roles is not permitted. New accounts are created as citizen and require administrator approval for surveyor or oracle privileges.'
+        });
+      }
       if (
         typeof fullName !== 'string' ||
         typeof email !== 'string' ||
@@ -362,8 +307,7 @@ export function attachApiRoutes(app: express.Express): void {
         fullName.trim().length > 160 ||
         !EMAIL_PATTERN.test(email.trim()) ||
         email.trim().length > 180 ||
-        !phone.trim() ||
-        phone.trim().length > 40 ||
+        !PHONE_PATTERN.test(phone.trim()) ||
         !credentialId.trim() ||
         credentialId.trim().length > 120 ||
         password.length < 6 ||
@@ -373,12 +317,11 @@ export function attachApiRoutes(app: express.Express): void {
           error: 'Valid name, email, phone, credential ID, and password (6–256 chars) are required.'
         });
       }
-      const validRole: AccessRoleId = role === 'surveyor' || role === 'oracle' ? role : 'citizen';
       const result = await signupUser({
         fullName,
         email,
         phone,
-        role: validRole,
+        role: 'citizen',
         state:
           typeof state === 'string' && state.trim()
             ? state.trim().slice(0, 100)
@@ -397,8 +340,34 @@ export function attachApiRoutes(app: express.Express): void {
     }
   });
 
+  app.get('/api/auth/me', async (req, res) => {
+    try {
+      const token = extractBearerToken(req);
+      const userSession = token ? verifyUserToken(token) : null;
+      if (!userSession) {
+        return res.status(401).json({ error: 'Invalid or expired user session.' });
+      }
+      const user = await getUserById(userSession.sub);
+      if (!user) {
+        return res.status(401).json({ error: 'User account no longer exists.' });
+      }
+      return res.json({ user });
+    } catch (err) {
+      console.error('[anagu/api] Session lookup error:', err instanceof Error ? err.message : err);
+      return res.status(500).json({ error: 'Unable to verify user session.' });
+    }
+  });
+
   app.post('/api/auth/demo', async (req, res) => {
     try {
+      if (!isDemoAccountsEnabled()) {
+        return res.status(403).json({
+          error: 'Demo authentication is disabled in this environment. Please sign in with a registered account.'
+        });
+      }
+      if (!checkRateLimit(req, 'user-demo', 20, 5 * 60 * 1000)) {
+        return res.status(429).json({ error: 'Too many demo sign-in requests. Please wait a moment.' });
+      }
       const roleParam = req.body?.role;
       const validRole: AccessRoleId = roleParam === 'surveyor' || roleParam === 'oracle' ? roleParam : 'citizen';
       const user = await loginDemoRole(validRole);
@@ -410,7 +379,7 @@ export function attachApiRoutes(app: express.Express): void {
     }
   });
 
-  // Parcel Registry Routes
+  // Parcel Registry Routes (Public Read, Authenticated Write)
   app.get('/api/parcels', async (_req, res) => {
     try {
       const parcels = await listParcels();
@@ -421,10 +390,16 @@ export function attachApiRoutes(app: express.Express): void {
     }
   });
 
-  app.post('/api/parcels', async (req, res) => {
+  app.post('/api/parcels', requireAuthenticated, async (req, res) => {
     try {
+      if (!checkRateLimit(req, 'parcel-create', 20, 10 * 60 * 1000)) {
+        return res.status(429).json({ error: 'Too many parcel submissions. Please wait before trying again.' });
+      }
       const rawParcel = req.body?.parcel as ParcelRecord | undefined;
-      const rawUserId = typeof req.body?.userId === 'string' ? req.body.userId.trim() : undefined;
+      const authActor = (
+        req as express.Request & { authActor?: { sub: string; isAdmin: boolean; role?: AccessRoleId } }
+      ).authActor;
+      const authenticatedUserId = authActor?.sub;
       if (
         !rawParcel ||
         typeof rawParcel.id !== 'string' ||
@@ -516,7 +491,7 @@ export function attachApiRoutes(app: express.Express): void {
         status: 'draft'
       };
 
-      const created = await createParcel(sanitizedParcel, rawUserId);
+      const created = await createParcel(sanitizedParcel, authenticatedUserId);
       return res.status(201).json({ parcel: created });
     } catch (err) {
       console.error('[anagu/api] Create parcel error:', err instanceof Error ? err.message : err);
@@ -524,14 +499,59 @@ export function attachApiRoutes(app: express.Express): void {
     }
   });
 
-  app.patch('/api/parcels/:id/spatial', requireRoleOrAdmin(['surveyor']), async (req, res) => {
+  app.post('/api/parcels/:id/spatial/analyze', requireRoleOrAdmin(['surveyor']), async (req, res) => {
     try {
-      const updated = await updateParcelSpatial(req.params.id);
-      if (!updated) {
+      if (!checkRateLimit(req, 'parcel-write', 60, 10 * 60 * 1000)) {
+        return res.status(429).json({ error: 'Too many spatial analysis requests. Please slow down.' });
+      }
+      const bufferMeters =
+        typeof req.body?.bufferMeters === 'number' && Number.isFinite(req.body.bufferMeters)
+          ? req.body.bufferMeters
+          : 0.5;
+      const enforceBuffer = Boolean(req.body?.enforceBuffer);
+      const { parcel, spatial } = await verifyParcelSpatial(req.params.id, {
+        bufferMeters,
+        enforceBuffer,
+        persist: false
+      });
+      if (!parcel || !spatial.found) {
         return res.status(404).json({ error: 'Parcel not found.' });
       }
-      return res.json({ parcel: updated });
+      return res.json({ parcel, spatial });
     } catch (err) {
+      if (err instanceof SpatialMigrationRequiredError) {
+        return res.status(503).json({ error: err.message, migrationRequired: true });
+      }
+      console.error('[anagu/api] Spatial analysis error:', err instanceof Error ? err.message : err);
+      return res.status(500).json({ error: 'Failed to execute PostGIS spatial analysis.' });
+    }
+  });
+
+  app.patch('/api/parcels/:id/spatial', requireRoleOrAdmin(['surveyor']), async (req, res) => {
+    try {
+      if (!checkRateLimit(req, 'parcel-write', 60, 10 * 60 * 1000)) {
+        return res.status(429).json({ error: 'Too many parcel verification requests. Please slow down.' });
+      }
+      const bufferMeters =
+        typeof req.body?.bufferMeters === 'number' && Number.isFinite(req.body.bufferMeters)
+          ? req.body.bufferMeters
+          : 0.5;
+      const enforceBuffer = Boolean(req.body?.enforceBuffer);
+      const { parcel, spatial } = await updateParcelSpatial(req.params.id, {
+        bufferMeters,
+        enforceBuffer
+      });
+      if (!parcel || !spatial.found) {
+        return res.status(404).json({ error: 'Parcel not found.' });
+      }
+      return res.json({ parcel, spatial });
+    } catch (err) {
+      if (err instanceof SpatialVerificationFailedError) {
+        return res.status(409).json({ error: err.message, spatial: err.spatial });
+      }
+      if (err instanceof SpatialMigrationRequiredError) {
+        return res.status(503).json({ error: err.message, migrationRequired: true });
+      }
       console.error('[anagu/api] Spatial approval error:', err instanceof Error ? err.message : err);
       return res.status(500).json({ error: 'Failed to update spatial verification status.' });
     }
@@ -539,6 +559,9 @@ export function attachApiRoutes(app: express.Express): void {
 
   app.patch('/api/parcels/:id/oracle', requireRoleOrAdmin(['oracle']), async (req, res) => {
     try {
+      if (!checkRateLimit(req, 'parcel-write', 60, 10 * 60 * 1000)) {
+        return res.status(429).json({ error: 'Too many parcel attestation requests. Please slow down.' });
+      }
       const updated = await recordOracleAttestation(req.params.id, req.body ?? {});
       if (!updated) {
         return res.status(404).json({ error: 'Parcel not found.' });
@@ -552,8 +575,11 @@ export function attachApiRoutes(app: express.Express): void {
 
   app.patch('/api/parcels/:id/mint', requireAdminAuth, async (req, res) => {
     try {
+      if (!checkRateLimit(req, 'admin-write', 120, 5 * 60 * 1000)) {
+        return res.status(429).json({ error: 'Too many administrative write requests.' });
+      }
       const { tokenId, txHash, blockNumber, issuanceTimestamp } = req.body ?? {};
-      if (typeof tokenId !== 'number' || typeof txHash !== 'string') {
+      if (typeof tokenId !== 'number' || typeof txHash !== 'string' || !txHash.trim()) {
         return res.status(400).json({ error: 'tokenId and txHash are required.' });
       }
       const updated = await mintParcelTitle(req.params.id, tokenId, txHash, blockNumber, issuanceTimestamp);
@@ -569,6 +595,9 @@ export function attachApiRoutes(app: express.Express): void {
 
   app.patch('/api/parcels/:id/revoke', requireAdminAuth, async (req, res) => {
     try {
+      if (!checkRateLimit(req, 'admin-write', 120, 5 * 60 * 1000)) {
+        return res.status(429).json({ error: 'Too many administrative write requests.' });
+      }
       const { ground, gazetteNumber, reason } = req.body ?? {};
       const validGround: RevocationGround =
         ground === 'BreachOfStatutoryCondition' ? 'BreachOfStatutoryCondition' : 'OverridingPublicInterest';
@@ -599,8 +628,11 @@ export function attachApiRoutes(app: express.Express): void {
     }
   });
 
-  app.post('/api/mqtt', async (req, res) => {
+  app.post('/api/mqtt', requireAuthenticated, async (req, res) => {
     try {
+      if (!checkRateLimit(req, 'mqtt-create', 60, 5 * 60 * 1000)) {
+        return res.status(429).json({ error: 'Too many telemetry events submitted. Please wait a moment.' });
+      }
       const message = req.body?.message as MqttMessage | undefined;
       if (
         !message ||
@@ -610,12 +642,11 @@ export function attachApiRoutes(app: express.Express): void {
       ) {
         return res.status(400).json({ error: 'Invalid MQTT event payload.' });
       }
-      if (ADMIN_ONLY_MQTT_TOPICS.has(message.topic)) {
-        const header = req.headers.authorization || '';
-        const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
-        if (!token || !verifyAdminToken(token)) {
-          return res.status(403).json({ error: 'Restricted MQTT audit topic requires admin authorization.' });
-        }
+      const authActor = (
+        req as express.Request & { authActor?: { sub: string; isAdmin: boolean; role?: AccessRoleId } }
+      ).authActor;
+      if (ADMIN_ONLY_MQTT_TOPICS.has(message.topic) && !authActor?.isAdmin) {
+        return res.status(403).json({ error: 'Restricted MQTT audit topic requires admin authorization.' });
       }
       const serializedPayload = JSON.stringify(message.payload ?? {});
       if (serializedPayload.length > 8192) {
@@ -647,24 +678,28 @@ export function attachApiRoutes(app: express.Express): void {
     }
   });
 
-  // Landing Page Contact Inquiries & Web3 Purchase Telemetry
+  // Landing Page Contact Inquiries & Web3 Purchase Telemetry (Public Write with Strict Validation + Rate Limiting)
   app.post('/api/inquiries', async (req, res) => {
     try {
+      if (!checkRateLimit(req, 'inquiry-create', 15, 10 * 60 * 1000)) {
+        return res.status(429).json({ error: 'Too many inquiries submitted. Please wait before submitting again.' });
+      }
       const { name, phone, email, state, message } = req.body ?? {};
+      const cleanName = typeof name === 'string' ? name.trim() : '';
+      const cleanPhone = typeof phone === 'string' ? phone.trim() : '';
+      const cleanEmail = typeof email === 'string' ? email.trim() : '';
       if (
-        typeof name !== 'string' ||
-        typeof phone !== 'string' ||
-        !name.trim() ||
-        name.trim().length > 160 ||
-        !phone.trim() ||
-        phone.trim().length > 40
+        cleanName.length < 2 ||
+        cleanName.length > 160 ||
+        !PHONE_PATTERN.test(cleanPhone) ||
+        (cleanEmail.length > 0 && (!EMAIL_PATTERN.test(cleanEmail) || cleanEmail.length > 180))
       ) {
-        return res.status(400).json({ error: 'Valid full name and phone number are required.' });
+        return res.status(400).json({ error: 'Valid full name, phone number, and optional email are required.' });
       }
       const saved = await createInquiry({
-        name: name.trim(),
-        phone: phone.trim(),
-        email: typeof email === 'string' && email.trim() ? email.trim().slice(0, 180) : undefined,
+        name: cleanName,
+        phone: cleanPhone,
+        email: cleanEmail ? cleanEmail.slice(0, 180) : undefined,
         state:
           typeof state === 'string' && state.trim()
             ? state.trim().slice(0, 100)
@@ -683,6 +718,21 @@ export function attachApiRoutes(app: express.Express): void {
   // ============================================================================
   app.post('/api/admin/auth/signup', async (req, res) => {
     try {
+      if (!checkRateLimit(req, 'admin-signup', 10, 15 * 60 * 1000)) {
+        return res.status(429).json({ error: 'Too many administrator registration attempts. Please wait.' });
+      }
+
+      const bearerToken = extractBearerToken(req);
+      const authorizedByAdmin = bearerToken ? Boolean(verifyAdminToken(bearerToken)) : false;
+      const authorizedByInvite = verifyAdminInviteCode(req.body?.inviteCode);
+
+      if (!authorizedByAdmin && !authorizedByInvite) {
+        return res.status(403).json({
+          error:
+            'Administrator registration is restricted. An existing authorized administrator session or valid invitation code is required.'
+        });
+      }
+
       const { fullName, email, phone, department, state, password } = req.body ?? {};
       if (
         typeof fullName !== 'string' ||
@@ -693,14 +743,13 @@ export function attachApiRoutes(app: express.Express): void {
         fullName.trim().length > 160 ||
         !EMAIL_PATTERN.test(email.trim()) ||
         email.trim().length > 180 ||
-        !phone.trim() ||
-        phone.trim().length > 40 ||
-        password.length < 6 ||
+        !PHONE_PATTERN.test(phone.trim()) ||
+        password.length < 8 ||
         password.length > 256
       ) {
         return res
           .status(400)
-          .json({ error: 'Valid full name, email, phone, and password (6–256 chars) are required.' });
+          .json({ error: 'Valid full name, email, phone, and password (8–256 chars) are required.' });
       }
       const result = await signupAdmin({
         fullName,
@@ -729,12 +778,18 @@ export function attachApiRoutes(app: express.Express): void {
 
   app.post('/api/admin/auth/login', async (req, res) => {
     try {
-      if (!checkAuthRateLimit(req, 'admin-login')) {
+      if (!checkRateLimit(req, 'admin-login', 15, 5 * 60 * 1000)) {
         return res.status(429).json({ error: 'Too many admin sign-in attempts. Please wait a few minutes.' });
       }
       const { email, password } = req.body ?? {};
-      if (typeof email !== 'string' || typeof password !== 'string' || !email.trim() || !password) {
-        return res.status(400).json({ error: 'Email and password are required.' });
+      if (
+        typeof email !== 'string' ||
+        typeof password !== 'string' ||
+        !EMAIL_PATTERN.test(email.trim()) ||
+        !password ||
+        password.length > 256
+      ) {
+        return res.status(400).json({ error: 'Valid email and password are required.' });
       }
       const result = await loginAdmin(email, password);
       if (result.error || !result.admin) {
@@ -927,9 +982,12 @@ export function attachApiRoutes(app: express.Express): void {
 
   app.patch('/api/admin/users/:id/role', requireAdminAuth, async (req, res) => {
     try {
+      if (!checkRateLimit(req, 'admin-write', 120, 5 * 60 * 1000)) {
+        return res.status(429).json({ error: 'Too many administrative write requests.' });
+      }
       const role = req.body?.role;
       if (role !== 'citizen' && role !== 'surveyor' && role !== 'oracle') {
-        return res.status(400).json({ error: 'Invalid role value.' });
+        return res.status(400).json({ error: 'Invalid role value. Allowed roles: citizen, surveyor, oracle.' });
       }
       const updated = await updateUserRole(req.params.id, role);
       if (!updated) {
@@ -944,6 +1002,9 @@ export function attachApiRoutes(app: express.Express): void {
 
   app.delete('/api/admin/users/:id', requireAdminAuth, async (req, res) => {
     try {
+      if (!checkRateLimit(req, 'admin-write', 120, 5 * 60 * 1000)) {
+        return res.status(429).json({ error: 'Too many administrative write requests.' });
+      }
       const deleted = await deleteUser(req.params.id);
       if (!deleted) {
         return res.status(404).json({ error: 'User not found.' });
@@ -957,6 +1018,9 @@ export function attachApiRoutes(app: express.Express): void {
 
   app.delete('/api/admin/inquiries/:id', requireAdminAuth, async (req, res) => {
     try {
+      if (!checkRateLimit(req, 'admin-write', 120, 5 * 60 * 1000)) {
+        return res.status(429).json({ error: 'Too many administrative write requests.' });
+      }
       const deleted = await deleteInquiry(req.params.id);
       if (!deleted) {
         return res.status(404).json({ error: 'Inquiry record not found.' });

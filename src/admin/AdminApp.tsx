@@ -171,6 +171,7 @@ export const AdminApp: React.FC = () => {
   const [signupState, setSignupState] = useState('Federal Capital Territory (Abuja)');
   const [signupPassword, setSignupPassword] = useState('');
   const [signupConfirm, setSignupConfirm] = useState('');
+  const [signupInviteCode, setSignupInviteCode] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
   const [isAuthBusy, setIsAuthBusy] = useState(false);
 
@@ -553,8 +554,12 @@ export const AdminApp: React.FC = () => {
       setAuthError('Please complete all required admin identity fields.');
       return;
     }
-    if (signupPassword.length < 6) {
-      setAuthError('Admin password must be at least 6 characters.');
+    if (!signupInviteCode.trim()) {
+      setAuthError('An authorized Admin Invitation Code is required to register an administrator account.');
+      return;
+    }
+    if (signupPassword.length < 8) {
+      setAuthError('Admin password must be at least 8 characters.');
       return;
     }
     if (signupPassword !== signupConfirm) {
@@ -569,7 +574,8 @@ export const AdminApp: React.FC = () => {
         phone: signupPhone.trim(),
         department: signupDepartment.trim(),
         state: signupState,
-        password: signupPassword
+        password: signupPassword,
+        inviteCode: signupInviteCode.trim()
       });
       persistSession(res.admin, res.token);
     } catch (err) {
@@ -1068,20 +1074,6 @@ export const AdminApp: React.FC = () => {
                 >
                   {isAuthBusy ? 'Signing In...' : 'Sign In to Admin Portal'}
                 </button>
-
-                <div className="pt-3 border-t border-slate-800 flex items-center justify-between gap-2 text-xs text-slate-400">
-                  <span>Default admin: <span className="font-mono text-emerald-400">admin@anagu.ng</span> / <span className="font-mono">anagu-admin</span></span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setLoginEmail('admin@anagu.ng');
-                      setLoginPassword('anagu-admin');
-                    }}
-                    className="text-emerald-400 hover:text-emerald-300 font-semibold whitespace-nowrap"
-                  >
-                    Fill Demo
-                  </button>
-                </div>
               </form>
             ) : (
               <form onSubmit={handleSignup} className="space-y-4">
@@ -1152,9 +1144,21 @@ export const AdminApp: React.FC = () => {
                   </label>
                 </div>
 
+                <label className="block space-y-1.5">
+                  <span className="text-xs font-medium text-slate-300">Admin Invitation Code *</span>
+                  <input
+                    type="password"
+                    required
+                    value={signupInviteCode}
+                    onChange={(e) => setSignupInviteCode(e.target.value)}
+                    placeholder="Enter administrator invitation code"
+                    className="w-full px-3 py-2.5 bg-slate-950 border border-slate-700 focus:border-emerald-500 rounded-xl text-xs text-white outline-none"
+                  />
+                </label>
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <label className="block space-y-1.5">
-                    <span className="text-xs font-medium text-slate-300">Password (min 6) *</span>
+                    <span className="text-xs font-medium text-slate-300">Password (min 8) *</span>
                     <input
                       type={showPassword ? 'text' : 'password'}
                       required

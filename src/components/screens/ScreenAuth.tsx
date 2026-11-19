@@ -20,52 +20,10 @@ import { NIGERIA_STATES_AND_LGAS } from '../../data/nigeriaLocations';
 import { apiDemoLogin, apiLogin, apiSignup, isBackendUnavailableError } from '../../lib/api';
 import { saveUserProfileToFirestore, signInWithGooglePopup } from '../../lib/firestoreRegistry';
 
-export interface StoredAuthAccount extends AuthUser {
-  password: string;
-}
-
-export const INITIAL_DEMO_ACCOUNTS: StoredAuthAccount[] = [
-  {
-    id: 'usr-citizen-01',
-    fullName: 'Dr. Aminu Bello Abubakar',
-    email: 'aminu.bello@anagu.ng',
-    phone: '+234 803 412 8890',
-    role: 'citizen',
-    state: 'Federal Capital Territory (Abuja)',
-    credentialId: 'NIN-8921-4091-2311',
-    password: 'anagu-citizen',
-    createdAt: '2026-06-12'
-  },
-  {
-    id: 'usr-surveyor-01',
-    fullName: 'Musa Adeleke',
-    email: 'musa.adeleke@nis-survey.ng',
-    phone: '+234 805 901 3342',
-    role: 'surveyor',
-    state: 'Federal Capital Territory (Abuja)',
-    credentialId: 'SURCON-NIS-4821',
-    password: 'anagu-surveyor',
-    createdAt: '2026-05-04'
-  },
-  {
-    id: 'usr-oracle-01',
-    fullName: 'Chief Chukwudi Nnamdi Eze',
-    email: 'chief.eze@oracle-council.ng',
-    phone: '+234 809 774 1120',
-    role: 'oracle',
-    state: 'Enugu State',
-    credentialId: 'Council Elder · Ogui Nike Royal Quorum',
-    password: 'anagu-oracle',
-    createdAt: '2026-04-19'
-  }
-];
-
 interface Props {
   initialMode: AuthMode;
   initialRole?: AccessRoleId;
-  accounts: StoredAuthAccount[];
   onAuthSuccess: (user: AuthUser) => void;
-  onRegisterAccount: (account: StoredAuthAccount, needsBackendSync?: boolean) => void;
   onBackToLanding: () => void;
 }
 
@@ -141,9 +99,7 @@ const ROLE_META: Record<
 export const ScreenAuth: React.FC<Props> = ({
   initialMode,
   initialRole = 'citizen',
-  accounts,
   onAuthSuccess,
-  onRegisterAccount,
   onBackToLanding
 }) => {
   const [mode, setMode] = useState<AuthMode>(initialMode);
@@ -195,41 +151,13 @@ export const ScreenAuth: React.FC<Props> = ({
       const user = await apiLogin(normalizedEmail, loginPassword);
       onAuthSuccess(user);
     } catch (err) {
-      const found = accounts.find((acc) => acc.email.toLowerCase() === normalizedEmail);
-      if (found && found.password === loginPassword) {
-        if (!isBackendUnavailableError(err)) {
-          // Local account exists on this device but was never synced to server (e.g. created offline): sync it now so other devices can also sign in
-          try {
-            const syncedUser = await apiSignup({
-              fullName: found.fullName,
-              email: found.email,
-              phone: found.phone,
-              role: found.role,
-              state: found.state,
-              credentialId: found.credentialId,
-              password: found.password
-            });
-            onRegisterAccount({ ...syncedUser, password: found.password }, false);
-            onAuthSuccess(syncedUser);
-            return;
-          } catch {
-            // Fall through to local sign-in on this device
-          }
-        }
-        const { password: _removed, ...safeUser } = found;
-        void _removed;
-        onAuthSuccess(safeUser);
-      } else if (isBackendUnavailableError(err)) {
-        if (found) {
-          setErrorMsg('Incorrect password. Please check your password or use a verified sample profile below.');
-        } else {
-          setErrorMsg('Unable to reach the registry server right now. Please check your connection and try again.');
-        }
+      if (isBackendUnavailableError(err)) {
+        setErrorMsg('Unable to reach the registry authentication server right now. Please try again shortly.');
       } else {
         setErrorMsg(
           err instanceof Error
             ? err.message
-            : 'Invalid email or password. Please check your credentials or use a verified sample profile below.'
+            : 'Invalid email or password. Please check your credentials and try again.'
         );
       }
     } finally {
@@ -273,39 +201,18 @@ export const ScreenAuth: React.FC<Props> = ({
         fullName: trimmedName,
         email: normalizedEmail,
         phone: trimmedPhone,
-        role: selectedRole,
+        role: 'citizen',
         state: stateJurisdiction,
         credentialId: trimmedCred,
         password: signupPassword
       });
-      onRegisterAccount({ ...createdUser, password: signupPassword }, false);
       onAuthSuccess(createdUser);
     } catch (err) {
-      const alreadyExists = accounts.some((acc) => acc.email.toLowerCase() === normalizedEmail);
       if (isBackendUnavailableError(err)) {
-        if (alreadyExists) {
-          setErrorMsg('An account with this email already exists. Please sign in instead.');
-        } else {
-          const localUser: AuthUser = {
-            id: `usr-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-            fullName: trimmedName,
-            email: normalizedEmail,
-            phone: trimmedPhone,
-            role: selectedRole,
-            state: stateJurisdiction,
-            credentialId: trimmedCred,
-            createdAt: new Date().toISOString().slice(0, 10)
-          };
-          onRegisterAccount({ ...localUser, password: signupPassword }, true);
-          onAuthSuccess(localUser);
-        }
+        setErrorMsg('Unable to reach the registry server to create your account. Please try again shortly.');
       } else {
         const message = err instanceof Error ? err.message : 'Unable to create account.';
-        if (message.toLowerCase().includes('already exists') || alreadyExists) {
-          setErrorMsg('An account with this email already exists. Please sign in instead.');
-        } else {
-          setErrorMsg(message);
-        }
+        setErrorMsg(message);
       }
     } finally {
       setIsSubmitting(false);
@@ -318,11 +225,12 @@ export const ScreenAuth: React.FC<Props> = ({
     try {
       const user = await apiDemoLogin(role);
       onAuthSuccess(user);
-    } catch {
-      const demoAccount = accounts.find((a) => a.role === role) || INITIAL_DEMO_ACCOUNTS[0];
-      const { password: _removed, ...safeUser } = demoAccount;
-      void _removed;
-      onAuthSuccess(safeUser);
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : 'Demo authentication is disabled in this environment. Please sign in with a registered account.'
+      );
     } finally {
       setIsSubmitting(false);
     }
@@ -333,7 +241,7 @@ export const ScreenAuth: React.FC<Props> = ({
     setIsSubmitting(true);
     try {
       const fbUser = await signInWithGooglePopup();
-      const cloudUser = await saveUserProfileToFirestore(fbUser, selectedRole, {
+      const cloudUser = await saveUserProfileToFirestore(fbUser, 'citizen', {
         state: stateJurisdiction
       });
       onAuthSuccess(cloudUser);
@@ -653,10 +561,10 @@ export const ScreenAuth: React.FC<Props> = ({
 
                 {showForgotHelp && (
                   <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-300 space-y-1.5">
-                    <div className="font-semibold text-white">Demo Credential Reference</div>
-                    <div>Citizen: <span className="font-mono text-emerald-400">aminu.bello@anagu.ng</span> / <span className="font-mono">anagu-citizen</span></div>
-                    <div>Surveyor: <span className="font-mono text-sky-400">musa.adeleke@nis-survey.ng</span> / <span className="font-mono">anagu-surveyor</span></div>
-                    <div>Oracle Elder: <span className="font-mono text-amber-400">chief.eze@oracle-council.ng</span> / <span className="font-mono">anagu-oracle</span></div>
+                    <div className="font-semibold text-white">Account Recovery Support</div>
+                    <p className="text-slate-400">
+                      For password recovery or role verification, please contact your State Land Registry administrator or sign in with your linked Google account.
+                    </p>
                   </div>
                 )}
 
@@ -831,13 +739,19 @@ export const ScreenAuth: React.FC<Props> = ({
                   </span>
                 </label>
 
+                {selectedRole !== 'citizen' && (
+                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-300">
+                    New accounts are provisioned with Citizen access by default. Licensed Surveyor and Community Oracle privileges are activated after Administrator verification.
+                  </div>
+                )}
+
                 <button
                   type="submit"
                   disabled={isSubmitting}
                   className="w-full py-3.5 px-5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white font-bold text-sm rounded-xl shadow-md transition-all flex items-center justify-center gap-2 min-h-[44px]"
                 >
                   <span>
-                    {isSubmitting ? 'Creating Account...' : `Create Account & Enter ${roleInfo.portalTitle}`}
+                    {isSubmitting ? 'Creating Account...' : 'Create Account & Enter Citizen Portal'}
                   </span>
                   <ArrowRight className="w-4 h-4" />
                 </button>

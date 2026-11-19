@@ -615,7 +615,8 @@ export async function saveUserProfileToFirestore(
       existingData?.role === 'surveyor' ||
       existingData?.role === 'oracle'
         ? existingData.role
-        : role;
+        : 'citizen';
+    void role;
 
     const fullName = String(
       details?.fullName || existingData?.fullName || firebaseUser.displayName || 'Anagu Citizen'

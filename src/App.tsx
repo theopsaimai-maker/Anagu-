@@ -31,7 +31,7 @@ import { FigmaPrototypePlayer } from './components/figma/FigmaPrototypePlayer';
 import { ScreenDesignTokens } from './components/screens/ScreenDesignTokens';
 import { ScreenLandingPage } from './components/screens/ScreenLandingPage';
 import { ScreenVerifiedLands } from './components/screens/ScreenVerifiedLands';
-import { ScreenAuth, INITIAL_DEMO_ACCOUNTS, StoredAuthAccount } from './components/screens/ScreenAuth';
+import { ScreenAuth } from './components/screens/ScreenAuth';
 import { ScreenCitizenPortal } from './components/screens/ScreenCitizenPortal';
 import { ScreenSurveyorCadastral } from './components/screens/ScreenSurveyorCadastral';
 import { ScreenCommunityOracle } from './components/screens/ScreenCommunityOracle';
@@ -43,13 +43,14 @@ import {
   apiApproveSpatial,
   apiCreateMqttMessage,
   apiCreateParcel,
+  apiGetMe,
   apiListMqttMessages,
   apiListParcels,
   apiMintTitle,
   apiRevokeTitle,
-  apiSignup,
   checkBackendAvailable,
-  clearUserSessionToken
+  clearUserSessionToken,
+  getUserSessionToken
 } from './lib/api';
 import { auth } from './lib/firebase';
 import {
@@ -67,10 +68,9 @@ import {
 const STORAGE_KEY = 'anagu_parcels_v1';
 const UNSYNCED_PARCELS_KEY = 'anagu_unsynced_parcels_v1';
 const UNSYNCED_CLOUD_PARCELS_KEY = 'anagu_unsynced_cloud_parcels_v1';
-const USERS_STORAGE_KEY = 'anagu_users_v1';
-const SYNCED_EMAILS_KEY = 'anagu_synced_user_emails_v1';
+const LEGACY_USERS_STORAGE_KEY = 'anagu_users_v1';
+const LEGACY_SYNCED_EMAILS_KEY = 'anagu_synced_user_emails_v1';
 const SESSION_STORAGE_KEY = 'anagu_session_v1';
-const DEMO_SEED_IDS = new Set(['usr-citizen-01', 'usr-surveyor-01', 'usr-oracle-01']);
 
 function readStringList(key: string): string[] {
   try {
@@ -149,9 +149,11 @@ export default function App() {
     const localPendingOnly = parcelsRef.current.filter(
       (p) => !cloudIds.has(p.id) && pendingSet.has(p.id)
     );
+    // Express/Supabase backend is authoritative over Firestore snapshots so
+    // unverified or stale Firestore docs never mask real backend PostGIS states.
     const merged = mergeParcelLists(
-      cloudList,
       expressList,
+      cloudList,
       localPendingOnly,
       INITIAL_PARCELS
     );
@@ -171,18 +173,15 @@ export default function App() {
     }
   }, [parcels]);
 
-  const [accounts, setAccounts] = useState<StoredAuthAccount[]>(() => {
+  // Scrub any legacy plaintext user credential caches from localStorage on startup
+  useEffect(() => {
     try {
-      const saved = localStorage.getItem(USERS_STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-      }
+      localStorage.removeItem(LEGACY_USERS_STORAGE_KEY);
+      localStorage.removeItem(LEGACY_SYNCED_EMAILS_KEY);
     } catch {
-      // Fallback to demo accounts
+      // Ignore storage access errors
     }
-    return INITIAL_DEMO_ACCOUNTS;
-  });
+  }, []);
 
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(() => {
     try {
@@ -194,13 +193,27 @@ export default function App() {
     return null;
   });
 
+  // Verify persisted Express user token against backend on startup
   useEffect(() => {
-    try {
-      localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(accounts));
-    } catch {
-      // Ignore storage quota errors
-    }
-  }, [accounts]);
+    const token = getUserSessionToken();
+    if (!token) return;
+    let active = true;
+    apiGetMe()
+      .then((verifiedUser) => {
+        if (!active) return;
+        setCurrentUser(verifiedUser);
+      })
+      .catch(() => {
+        if (!active) return;
+        clearUserSessionToken();
+        if (!auth.currentUser?.emailVerified) {
+          setCurrentUser(null);
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     try {
@@ -281,45 +294,6 @@ export default function App() {
           }
         }
         writeUnsyncedParcelIds(stillUnsynced);
-      }
-
-      // Replay any local custom accounts that have not yet been synced to the server
-      try {
-        const rawUsers = localStorage.getItem(USERS_STORAGE_KEY);
-        const savedUsers: StoredAuthAccount[] = rawUsers ? JSON.parse(rawUsers) : [];
-        if (Array.isArray(savedUsers) && savedUsers.length > 0) {
-          const syncedSet = new Set(readStringList(SYNCED_EMAILS_KEY).map((e) => e.toLowerCase()));
-          let changed = false;
-          for (const acc of savedUsers) {
-            if (!acc?.email || !acc?.password || DEMO_SEED_IDS.has(acc.id)) continue;
-            const normEmail = acc.email.trim().toLowerCase();
-            if (syncedSet.has(normEmail)) continue;
-            try {
-              await apiSignup({
-                fullName: acc.fullName,
-                email: normEmail,
-                phone: acc.phone,
-                role: acc.role,
-                state: acc.state,
-                credentialId: acc.credentialId,
-                password: acc.password
-              });
-              syncedSet.add(normEmail);
-              changed = true;
-            } catch (err) {
-              const msg = err instanceof Error ? err.message.toLowerCase() : '';
-              if (msg.includes('already exists')) {
-                syncedSet.add(normEmail);
-                changed = true;
-              }
-            }
-          }
-          if (changed) {
-            writeStringList(SYNCED_EMAILS_KEY, Array.from(syncedSet));
-          }
-        }
-      } catch {
-        // Ignore user replay errors
       }
 
       if (Array.isArray(remoteParcels)) {
@@ -466,14 +440,6 @@ export default function App() {
     setViewMode('auth');
   }, []);
 
-  const handleRegisterAccount = useCallback((newAccount: StoredAuthAccount, needsBackendSync = false) => {
-    const cleanEmail = newAccount.email.trim().toLowerCase();
-    setAccounts((prev) => [newAccount, ...prev.filter((a) => a.email.toLowerCase() !== cleanEmail)]);
-    if (!needsBackendSync) {
-      writeStringList(SYNCED_EMAILS_KEY, [...readStringList(SYNCED_EMAILS_KEY), cleanEmail]);
-    }
-  }, []);
-
   const handleAuthSuccess = useCallback((user: AuthUser) => {
     setCurrentUser(user);
     setActivePortalStep(user.role);
@@ -489,8 +455,7 @@ export default function App() {
 
   const handleConnectGoogleSync = useCallback(async () => {
     const fbUser = await signInWithGooglePopup();
-    const role = currentUser?.role || authRole || 'citizen';
-    const syncedUser = await saveUserProfileToFirestore(fbUser, role, {
+    const syncedUser = await saveUserProfileToFirestore(fbUser, 'citizen', {
       fullName: currentUser?.fullName,
       phone: currentUser?.phone,
       state: currentUser?.state,
@@ -501,7 +466,7 @@ export default function App() {
     }
     setIsCloudConnected(true);
     await flushPendingCloudParcels();
-  }, [currentUser, authRole, flushPendingCloudParcels]);
+  }, [currentUser, flushPendingCloudParcels]);
 
   // Active frame object
   const activeFrame = FIGMA_FRAMES.find(f => f.id === selectedFrameId) || FIGMA_FRAMES[0];
@@ -603,20 +568,35 @@ export default function App() {
     return finalParcel;
   };
 
-  const handleApproveSpatial = (parcelId: string) => {
-    setParcels(prev => prev.map(p => p.id === parcelId ? { ...p, status: 'spatial_verified' } : p));
+  const handleApproveSpatial = async (
+    parcelId: string,
+    options?: { bufferMeters?: number; enforceBuffer?: boolean }
+  ): Promise<ParcelRecord> => {
+    // Do NOT optimistically set spatial_verified or write to Firestore before
+    // real backend PostGIS verification succeeds.
+    const updated = await apiApproveSpatial(parcelId, options);
+    expressParcelsRef.current = [
+      updated,
+      ...expressParcelsRef.current.filter((p) => p.id !== parcelId)
+    ];
+    setParcels(prev => prev.map(p => (p.id === parcelId ? updated : p)));
     void updateParcelStageInFirestore(parcelId, 'spatial_verified');
-    apiApproveSpatial(parcelId).catch(() => {
-      // Keep local state if offline
-    });
+    return updated;
   };
 
   const handleApproveOracle = (parcelId: string, details?: Record<string, any>) => {
     setParcels(prev => prev.map(p => p.id === parcelId ? { ...p, status: 'oracle_verified' } : p));
     void updateParcelStageInFirestore(parcelId, 'oracle_verified');
-    apiApproveOracle(parcelId, details).catch(() => {
-      // Keep local state if offline
-    });
+    apiApproveOracle(parcelId, details)
+      .then((updated) => {
+        setParcels(prev => prev.map(p => p.id === parcelId ? updated : p));
+      })
+      .catch((err) => {
+        const status = (err as { status?: number })?.status;
+        if (status === 401 || status === 403) {
+          void syncFromBackend(true);
+        }
+      });
   };
 
   const handleMintTitle = (parcelId: string, tokenId: number, txHash: string) => {
@@ -630,9 +610,16 @@ export default function App() {
       blockNumber,
       issuanceTimestamp
     } : p));
-    apiMintTitle(parcelId, tokenId, txHash, blockNumber, issuanceTimestamp).catch(() => {
-      // Keep local state if offline
-    });
+    apiMintTitle(parcelId, tokenId, txHash, blockNumber, issuanceTimestamp)
+      .then((updated) => {
+        setParcels(prev => prev.map(p => p.id === parcelId ? updated : p));
+      })
+      .catch((err) => {
+        const status = (err as { status?: number })?.status;
+        if (status === 401 || status === 403) {
+          void syncFromBackend(true);
+        }
+      });
   };
 
   const handleRevokeTitle = (parcelId: string, ground: RevocationGround, gazetteNumber: string, reason: string) => {
@@ -652,8 +639,11 @@ export default function App() {
       .then((updated) => {
         setParcels(prev => prev.map(p => p.id === parcelId ? updated : p));
       })
-      .catch(() => {
-        // Keep local state if offline
+      .catch((err) => {
+        const status = (err as { status?: number })?.status;
+        if (status === 401 || status === 403) {
+          void syncFromBackend(true);
+        }
       });
   };
 
@@ -753,9 +743,7 @@ export default function App() {
           key={`${authMode}-${authRole}`}
           initialMode={authMode}
           initialRole={authRole}
-          accounts={accounts}
           onAuthSuccess={handleAuthSuccess}
-          onRegisterAccount={handleRegisterAccount}
           onBackToLanding={() => setViewMode('landing')}
         />
       </div>

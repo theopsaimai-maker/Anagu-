@@ -3,6 +3,7 @@ import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { attachApiRoutes } from './server/createApiApp.ts';
+import { validateAuthConfig } from './server/auth.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -22,6 +23,7 @@ function getCliArg(flag: string): string | undefined {
 }
 
 async function startServer() {
+  validateAuthConfig();
   const app = express();
   attachApiRoutes(app);
 

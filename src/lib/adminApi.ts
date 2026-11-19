@@ -135,6 +135,7 @@ export async function apiAdminSignup(payload: {
   department: string;
   state: string;
   password: string;
+  inviteCode?: string;
 }): Promise<{ admin: AdminUser; token: string }> {
   return adminRequest<{ admin: AdminUser; token: string }>('/api/admin/auth/signup', {
     method: 'POST',
