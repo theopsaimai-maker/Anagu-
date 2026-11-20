@@ -500,6 +500,29 @@ export class SpatialMigrationRequiredError extends Error {
   }
 }
 
+export const FINALIZED_PARCEL_STATUSES: ReadonlySet<ParcelRecord['status']> = new Set([
+  'oracle_verified',
+  'legal_approved',
+  'registered',
+  'revoked',
+  'rejected'
+]);
+
+export class ParcelGeometryImmutableError extends Error {
+  parcelId: string;
+  status: ParcelRecord['status'];
+
+  constructor(parcelId: string, status: ParcelRecord['status'], message?: string) {
+    super(
+      message ||
+        `Coordinate modification rejected: parcel "${parcelId}" is in finalized lifecycle state "${status}" and its coordinates/geometry are immutable.`
+    );
+    this.name = 'ParcelGeometryImmutableError';
+    this.parcelId = parcelId;
+    this.status = status;
+  }
+}
+
 export class SpatialVerificationFailedError extends Error {
   spatial: SpatialVerificationResult;
 
@@ -1202,6 +1225,15 @@ export async function createParcel(parcel: ParcelRecord, userId?: string): Promi
       );
       return mapParcelRow(res.rows[0]);
     } catch (err) {
+      const anyErr = err as { code?: string; message?: string };
+      if (
+        anyErr?.code === '23514' &&
+        typeof anyErr?.message === 'string' &&
+        (anyErr.message.includes('Coordinate modification rejected') ||
+          anyErr.message.includes('Geometry modification rejected'))
+      ) {
+        throw new ParcelGeometryImmutableError(parcel.id, parcel.status, anyErr.message);
+      }
       if (!isTransientConnectionError(err)) throw err;
       tripPgCircuit(err, 'createParcel');
     }
@@ -1216,6 +1248,10 @@ export async function createParcel(parcel: ParcelRecord, userId?: string): Promi
       });
       return rows[0] ? mapParcelRow(rows[0]) : parcel;
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('Coordinate modification rejected') || msg.includes('Geometry modification rejected')) {
+        throw new ParcelGeometryImmutableError(parcel.id, parcel.status, msg);
+      }
       if (!shouldFallbackFromSupabase(err, 'createParcel')) throw err;
     }
   }
@@ -1223,10 +1259,22 @@ export async function createParcel(parcel: ParcelRecord, userId?: string): Promi
   const list = getMemoryParcels();
   const existingIdx = list.findIndex((p) => p.id === parcel.id);
   if (existingIdx >= 0) {
-    list[existingIdx] = parcel;
-  } else {
-    list.unshift(parcel);
+    const existing = list[existingIdx];
+    const coordsChanged =
+      JSON.stringify(existing.coordinates ?? []) !== JSON.stringify(parcel.coordinates ?? []);
+    if (coordsChanged && FINALIZED_PARCEL_STATUSES.has(existing.status)) {
+      throw new ParcelGeometryImmutableError(existing.id, existing.status);
+    }
+    const nextStatus: ParcelRecord['status'] =
+      coordsChanged && (existing.status === 'draft' || existing.status === 'spatial_verified')
+        ? 'draft'
+        : parcel.status;
+    const saved: ParcelRecord = { ...parcel, status: nextStatus };
+    list[existingIdx] = saved;
+    saveDurableStore();
+    return saved;
   }
+  list.unshift(parcel);
   saveDurableStore();
   return parcel;
 }
@@ -1530,9 +1578,21 @@ function evaluateParcelSpatialInMemory(
   }
 
   const passed = isValid && trueOverlaps.length === 0 && (!enforceBuffer || bufferBreaches.length === 0);
+  const eligibleForSpatialPersist = target.status === 'draft' || target.status === 'spatial_verified';
+  let persisted = false;
+  let persistenceRefused = false;
+  let persistenceRefusedReason: string | null = null;
+
   if (persist && passed) {
-    target.status = 'spatial_verified';
-    saveDurableStore();
+    if (eligibleForSpatialPersist) {
+      target.status = 'spatial_verified';
+      saveDurableStore();
+      persisted = true;
+    } else {
+      persisted = false;
+      persistenceRefused = true;
+      persistenceRefusedReason = `Persistence refused: parcel is currently in "${target.status}" lifecycle state. Only "draft" or "spatial_verified" parcels can persist spatial_verified.`;
+    }
   }
 
   return {
@@ -1560,7 +1620,9 @@ function evaluateParcelSpatialInMemory(
       boundaryContacts,
       bufferBreaches,
       passed,
-      persisted: persist && passed,
+      persisted,
+      persistenceRefused,
+      persistenceRefusedReason,
       status: target.status,
       queryDurationMs: Math.max(Date.now() - started, 1)
     }
@@ -1712,6 +1774,13 @@ export async function updateParcelSpatial(
       : result.spatial.hasTrueOverlap
         ? `Spatial overlap detected with ${result.spatial.trueOverlapCount} existing active parcel(s).`
         : `Buffer clearance violation (${result.spatial.bufferMeters}m) with ${result.spatial.bufferBreachCount} neighboring parcel(s).`;
+    throw new SpatialVerificationFailedError(reason, result.spatial);
+  }
+  if (result.spatial.persistenceRefused || !result.spatial.persisted) {
+    const reason =
+      result.spatial.persistenceRefusedReason ||
+      result.spatial.error ||
+      `Spatial verification persistence was refused because parcel is currently in "${result.spatial.status ?? result.parcel.status}" lifecycle state.`;
     throw new SpatialVerificationFailedError(reason, result.spatial);
   }
   return result;

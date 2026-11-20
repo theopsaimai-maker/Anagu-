@@ -80,6 +80,8 @@ export interface SpatialVerificationResult {
   bufferBreaches: SpatialConflictRecord[];
   passed: boolean;
   persisted: boolean;
+  persistenceRefused?: boolean;
+  persistenceRefusedReason?: string | null;
   status?: ParcelRecord['status'];
   queryDurationMs: number;
   error?: string;

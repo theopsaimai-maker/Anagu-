@@ -1,0 +1,83 @@
+# ANAGU Private Hyperledger Besu QBFT 4-Validator Development Network
+# TEST-ONLY LOCAL DEVELOPMENT INFRASTRUCTURE — DO NOT DEPLOY AS PUBLIC PRODUCTION INFRASTRUCTURE.
+#
+# Prerequisites:
+#   1. Run ./scripts/init-network.sh once to generate test-only validator keys,
+#      config/genesis.json, and config/static-nodes.json.
+#   2. Start with: docker compose up -d
+#   3. Verify with: ./scripts/verify-network.sh
+
+services:
+  validator1:
+    image: hyperledger/besu:24.12.2
+    container_name: anagu-besu-validator1
+    restart: unless-stopped
+    command: ["--config-file=/config/validator1.toml"]
+    ports:
+      # Bound strictly to localhost so RPC is never exposed publicly.
+      - "127.0.0.1:8545:8545"
+    volumes:
+      - ./config:/config:ro
+      - ./nodes/validator1/keys:/keys:ro
+      - besu-validator1-data:/data
+    networks:
+      anagu-besu-net:
+        ipv4_address: 172.26.0.11
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -X POST -H 'Content-Type: application/json' --data '{\"jsonrpc\":\"2.0\",\"method\":\"eth_chainId\",\"params\":[],\"id\":1}' http://127.0.0.1:8545 | grep -q '0x343b'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  validator2:
+    image: hyperledger/besu:24.12.2
+    container_name: anagu-besu-validator2
+    restart: unless-stopped
+    command: ["--config-file=/config/validator2.toml"]
+    volumes:
+      - ./config:/config:ro
+      - ./nodes/validator2/keys:/keys:ro
+      - besu-validator2-data:/data
+    networks:
+      anagu-besu-net:
+        ipv4_address: 172.26.0.12
+
+  validator3:
+    image: hyperledger/besu:24.12.2
+    container_name: anagu-besu-validator3
+    restart: unless-stopped
+    command: ["--config-file=/config/validator3.toml"]
+    volumes:
+      - ./config:/config:ro
+      - ./nodes/validator3/keys:/keys:ro
+      - besu-validator3-data:/data
+    networks:
+      anagu-besu-net:
+        ipv4_address: 172.26.0.13
+
+  validator4:
+    image: hyperledger/besu:24.12.2
+    container_name: anagu-besu-validator4
+    restart: unless-stopped
+    command: ["--config-file=/config/validator4.toml"]
+    volumes:
+      - ./config:/config:ro
+      - ./nodes/validator4/keys:/keys:ro
+      - besu-validator4-data:/data
+    networks:
+      anagu-besu-net:
+        ipv4_address: 172.26.0.14
+
+volumes:
+  besu-validator1-data:
+  besu-validator2-data:
+  besu-validator3-data:
+  besu-validator4-data:
+
+networks:
+  anagu-besu-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.26.0.0/24

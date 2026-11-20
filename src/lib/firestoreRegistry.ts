@@ -960,20 +960,6 @@ export function subscribeFirestoreMqttEvents(
   );
 }
 
-/**
- * Merges parcel arrays by priority order (earlier lists win when IDs collide)
- * so Cloud Firestore remains canonical while preserving pending Express/local submissions.
- */
-export function mergeParcelLists(...lists: ParcelRecord[][]): ParcelRecord[] {
-  const map = new Map<string, ParcelRecord>();
-  for (const list of lists) {
-    for (const item of list) {
-      if (!item || !item.id) continue;
-      if (!map.has(item.id)) {
-        map.set(item.id, item);
-      }
-    }
-  }
-  return Array.from(map.values()).sort((a, b) => b.id.localeCompare(a.id));
-}
+export { mergeParcelLists } from './parcelMerge';
+
 

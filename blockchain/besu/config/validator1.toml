@@ -1,0 +1,24 @@
+# ANAGU Private Besu QBFT Validator 1 (Local Development RPC Gateway)
+# TEST-ONLY DEVELOPMENT CONFIGURATION — DO NOT USE IN PRODUCTION
+
+genesis-file="/config/genesis.json"
+data-path="/data"
+node-private-key-file="/keys/key"
+static-nodes-file="/config/static-nodes.json"
+
+# Closed private mesh: rely strictly on static-nodes.json
+discovery-enabled=false
+p2p-host="0.0.0.0"
+p2p-port=30303
+
+# Zero-gas private development network
+min-gas-price=0
+
+# Least-privilege JSON-RPC (published ONLY on 127.0.0.1:8545 via docker-compose.yml)
+# Unrestricted account unlocking (PERSONAL/ADMIN/DEBUG) is intentionally disabled.
+rpc-http-enabled=true
+rpc-http-host="0.0.0.0"
+rpc-http-port=8545
+rpc-http-api=["ETH","NET","WEB3","QBFT"]
+rpc-http-cors-origins=["https://remix.ethereum.org","http://remix.ethereum.org","http://localhost:3000","http://127.0.0.1:3000"]
+host-allowlist=["localhost","127.0.0.1","validator1"]

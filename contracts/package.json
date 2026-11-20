@@ -1,0 +1,26 @@
+{
+  "name": "anagu-contracts",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ANAGU ERC-721 Land Title NFT smart contracts for Hyperledger Besu QBFT (Chain ID 13371)",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "export-abi": "tsx scripts/export-abi.ts",
+    "clean": "hardhat clean"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "5.0.2"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@types/chai": "^4.3.20",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.14.0",
+    "dotenv": "^17.2.3",
+    "hardhat": "^2.22.17",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.3"
+  }
+}

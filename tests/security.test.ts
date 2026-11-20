@@ -286,7 +286,7 @@ describe('ANAGU Phase 1 Security & Authentication Hardening', () => {
     assert.equal(selfPromote.status, 403);
 
     // Citizen cannot execute surveyor spatial clearance before approval
-    const preApprovalSpatial = await apiFetch('/api/parcels/PAR-2026-0891/spatial', {
+    const preApprovalSpatial = await apiFetch('/api/parcels/PAR-2026-0902/spatial', {
       method: 'PATCH',
       token: citizenToken,
       body: JSON.stringify({})
@@ -313,14 +313,25 @@ describe('ANAGU Phase 1 Security & Authentication Hardening', () => {
     assert.equal(approveRes.status, 200);
     assert.equal(approveRes.body.user.role, 'surveyor');
 
-    // Now the user's backend-verified role permits spatial verification
-    const postApprovalSpatial = await apiFetch('/api/parcels/PAR-2026-0891/spatial', {
+    // Now the user's backend-verified role permits spatial verification on eligible parcel
+    const postApprovalSpatial = await apiFetch('/api/parcels/PAR-2026-0902/spatial', {
       method: 'PATCH',
       token: citizenToken,
       body: JSON.stringify({})
     });
     assert.equal(postApprovalSpatial.status, 200);
     assert.equal(postApprovalSpatial.body.parcel.status, 'spatial_verified');
+
+    // Lifecycle protection: even an authorized surveyor cannot downgrade a registered parcel
+    const registeredDowngrade = await apiFetch('/api/parcels/PAR-2026-0891/spatial', {
+      method: 'PATCH',
+      token: citizenToken,
+      body: JSON.stringify({})
+    });
+    assert.equal(registeredDowngrade.status, 409);
+    assert.equal(registeredDowngrade.body.spatial.persisted, false);
+    assert.equal(registeredDowngrade.body.spatial.persistenceRefused, true);
+    assert.equal(registeredDowngrade.body.spatial.status, 'registered');
   });
 
   it('8. CORS rejects untrusted origins and allows explicitly trusted origins', async () => {

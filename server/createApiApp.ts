@@ -37,6 +37,7 @@ import {
   loginDemoRole,
   loginUser,
   mintParcelTitle,
+  ParcelGeometryImmutableError,
   recordOracleAttestation,
   revokeParcelTitle,
   signupAdmin,
@@ -494,6 +495,9 @@ export function attachApiRoutes(app: express.Express): void {
       const created = await createParcel(sanitizedParcel, authenticatedUserId);
       return res.status(201).json({ parcel: created });
     } catch (err) {
+      if (err instanceof ParcelGeometryImmutableError) {
+        return res.status(409).json({ error: err.message });
+      }
       console.error('[anagu/api] Create parcel error:', err instanceof Error ? err.message : err);
       return res.status(500).json({ error: 'Failed to persist land parcel application.' });
     }
@@ -617,8 +621,8 @@ export function attachApiRoutes(app: express.Express): void {
     }
   });
 
-  // MQTT Event Telemetry Routes
-  app.get('/api/mqtt', async (_req, res) => {
+  // MQTT Event Telemetry Routes (Authenticated Read & Write)
+  app.get('/api/mqtt', requireAuthenticated, async (_req, res) => {
     try {
       const messages = await listMqttMessages();
       res.json({ messages });

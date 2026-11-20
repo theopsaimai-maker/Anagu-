@@ -1,0 +1,15 @@
+# ANAGU Private Besu QBFT Validator 2 (Internal Consensus Only)
+# TEST-ONLY DEVELOPMENT CONFIGURATION — DO NOT USE IN PRODUCTION
+
+genesis-file="/config/genesis.json"
+data-path="/data"
+node-private-key-file="/keys/key"
+static-nodes-file="/config/static-nodes.json"
+
+discovery-enabled=false
+p2p-host="0.0.0.0"
+p2p-port=30303
+min-gas-price=0
+
+# No RPC exposed on consensus-only validators
+rpc-http-enabled=false

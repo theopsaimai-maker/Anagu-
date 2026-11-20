@@ -1,0 +1,8 @@
+# Generated test-only validator private/public keys and local network artifacts
+# NEVER commit generated private key material to Git.
+nodes/
+networkFiles/
+config/genesis.json
+config/static-nodes.json
+*.key
+.env

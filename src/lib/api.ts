@@ -154,8 +154,12 @@ async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
     if (!response.ok) {
       const serverErrorMsg = (data as { error?: string })?.error;
       const isParcelNotFound = response.status === 404 && serverErrorMsg === 'Parcel not found.';
+      const isMigrationRequired =
+        response.status === 503 &&
+        Boolean((data as { migrationRequired?: boolean })?.migrationRequired);
       const unavailable =
         !isParcelNotFound &&
+        !isMigrationRequired &&
         (response.status === 404 ||
           response.status === 405 ||
           response.status === 502 ||

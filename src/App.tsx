@@ -270,9 +270,10 @@ export default function App() {
         currentLocalParcels = [];
       }
 
+      const hasSessionToken = Boolean(getUserSessionToken());
       const [initialRemoteParcels, remoteMqtt] = await Promise.all([
         apiListParcels(),
-        apiListMqttMessages()
+        hasSessionToken ? apiListMqttMessages().catch(() => []) : Promise.resolve([])
       ]);
 
       let remoteParcels = Array.isArray(initialRemoteParcels) ? initialRemoteParcels : [];

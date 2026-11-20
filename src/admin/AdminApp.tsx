@@ -47,7 +47,7 @@ import { NIGERIA_STATES_AND_LGAS } from '../data/nigeriaLocations';
 import { OpenStreetMapWidget } from '../components/maps/OpenStreetMapWidget';
 import { LandRegistrySnapshot } from '../components/maps/LandRegistrySnapshot';
 import { describeParcelGeography } from '../lib/geoDescription';
-import { apiListMqttMessages, apiListParcels } from '../lib/api';
+import { apiListParcels } from '../lib/api';
 import {
   ADMIN_TOKEN_KEY,
   ADMIN_USER_KEY,
@@ -211,13 +211,15 @@ export const AdminApp: React.FC = () => {
   const seededInitialCloudRef = useRef(false);
 
   const recomputeMergedParcels = useCallback(() => {
-    const cloudList = cloudParcelsRef.current.filter(
-      (p) => !deletedParcelIdsRef.current.has(p.id)
-    );
     const expressList = expressParcelsRef.current.filter(
       (p) => !deletedParcelIdsRef.current.has(p.id)
     );
-    const merged = mergeParcelLists(cloudList, expressList);
+    const cloudList = cloudParcelsRef.current.filter(
+      (p) => !deletedParcelIdsRef.current.has(p.id)
+    );
+    // Express/Supabase is authoritative for parcel lifecycle and spatial verification state.
+    // Firestore records are retained only for parcels absent from the Express response or fallback.
+    const merged = mergeParcelLists(expressList, cloudList);
     setParcels(merged);
   }, []);
 
@@ -236,19 +238,24 @@ export const AdminApp: React.FC = () => {
   }, []);
 
   const [isOfflineMode, setIsOfflineMode] = useState(false);
+  const [isUsingFirestoreFallback, setIsUsingFirestoreFallback] = useState(false);
+  const [expressSyncError, setExpressSyncError] = useState<string | null>(null);
+
+  const hasActiveExpressAdminToken = useCallback(() => {
+    if (typeof window === 'undefined') return false;
+    const token = localStorage.getItem(ADMIN_TOKEN_KEY);
+    return Boolean(token && token !== 'firebase-cloud-session');
+  }, []);
 
   const fetchOverview = useCallback(
     async (quiet = false) => {
       if (!quiet) setIsLoadingData(true);
       try {
-        const hasExpressToken = Boolean(
-          typeof window !== 'undefined' &&
-            localStorage.getItem(ADMIN_TOKEN_KEY) &&
-            localStorage.getItem(ADMIN_TOKEN_KEY) !== 'firebase-cloud-session'
-        );
+        const hasExpressToken = hasActiveExpressAdminToken();
 
         let expressSucceeded = false;
         let cloudSucceeded = false;
+        let expressFailureReason: string | null = null;
 
         // 1. Fetch Express API overview (when signed into Express backend) OR public Express parcels
         if (hasExpressToken) {
@@ -286,6 +293,8 @@ export const AdminApp: React.FC = () => {
               return Array.from(map.values());
             });
           } catch (err) {
+            expressFailureReason =
+              err instanceof Error ? err.message : 'Unable to reach Express admin API.';
             if (err instanceof AdminAuthError) {
               if (!isCloudAdmin) {
                 clearSession();
@@ -298,33 +307,25 @@ export const AdminApp: React.FC = () => {
             }
           }
         } else {
-          // Probe public Express parcels + MQTT when available (migrates legacy server parcels like BAU/ALKA/2026-865)
+          // Probe public Express parcels so authoritative Express/Supabase records take precedence
+          // (Protected MQTT telemetry is loaded via /api/admin/overview when signed in with an Express admin token)
           try {
-            const [pubParcels, pubMqtt] = await Promise.all([
-              apiListParcels(),
-              apiListMqttMessages()
-            ]);
+            const pubParcels = await apiListParcels();
             expressSucceeded = true;
             expressParcelsRef.current = pubParcels;
-            if (pubMqtt.length > 0) {
-              setMqttMessages((prev) => {
-                const map = new Map<string, MqttMessage>();
-                for (const m of prev) map.set(m.id, m);
-                for (const m of pubMqtt) if (!map.has(m.id)) map.set(m.id, m);
-                return Array.from(map.values()).sort((a, b) => b.id.localeCompare(a.id));
-              });
-            }
-          } catch {
-            // Normal on static split-domain deployment — Cloud Firestore handles live data
+          } catch (err) {
+            expressFailureReason =
+              err instanceof Error ? err.message : 'Authoritative Express/Supabase API unreachable.';
           }
         }
 
-        // 2. Fetch Cloud Firestore collections when Cloud Admin is signed in
+        // 2. Fetch Cloud Firestore collections when Cloud Admin is signed in (secondary / cross-device fallback)
         if (isCloudAdmin || auth.currentUser?.emailVerified) {
           cloudSucceeded = true;
 
-          // Migrate Express server parcels + initial registry seed into Cloud Firestore once
-          const initialBundle = seededInitialCloudRef.current ? [] : INITIAL_PARCELS;
+          // Mirror authoritative Express parcels to Cloud Firestore (avoid seeding stale INITIAL_PARCELS when Express is live)
+          const initialBundle =
+            !expressSucceeded && !seededInitialCloudRef.current ? INITIAL_PARCELS : [];
           const expressToSync = expressParcelsRef.current.filter(
             (p) => !deletedParcelIdsRef.current.has(p.id)
           );
@@ -373,6 +374,8 @@ export const AdminApp: React.FC = () => {
 
         recomputeMergedParcels();
         setIsOfflineMode(!cloudSucceeded && !expressSucceeded);
+        setIsUsingFirestoreFallback(!expressSucceeded && cloudSucceeded);
+        setExpressSyncError(!expressSucceeded ? expressFailureReason : null);
         setLastSyncedAt(new Date().toLocaleTimeString());
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unable to fetch monitoring data.';
@@ -383,7 +386,7 @@ export const AdminApp: React.FC = () => {
         if (!quiet) setIsLoadingData(false);
       }
     },
-    [clearSession, isCloudAdmin, recomputeMergedParcels]
+    [clearSession, hasActiveExpressAdminToken, isCloudAdmin, recomputeMergedParcels]
   );
 
   // Restore Firebase Google Admin session cleanly across reloads & devices
@@ -589,23 +592,35 @@ export const AdminApp: React.FC = () => {
     setActionBusyId(parcel.id);
     setFeedbackBanner(null);
     try {
-      let updated: ParcelRecord | null = null;
-      if (isCloudAdmin) {
-        // Ensure parcel exists in Firestore first in case it came from Express/local
+      let updated: ParcelRecord;
+      let usedFallbackOnly = false;
+      if (hasActiveExpressAdminToken()) {
+        // Express/Supabase is authoritative — persist there first, then mirror to Firestore if linked
+        updated = await apiAdminVerifyParcel(parcel.id);
+        expressParcelsRef.current = [
+          updated,
+          ...expressParcelsRef.current.filter((p) => p.id !== updated.id)
+        ];
+        if (isCloudAdmin) {
+          void syncParcelsToFirestore([updated], { isAdminSync: true }).catch(() => undefined);
+        }
+      } else if (isCloudAdmin) {
+        usedFallbackOnly = true;
         if (!cloudParcelsRef.current.some((p) => p.id === parcel.id)) {
           await syncParcelsToFirestore([parcel], { isAdminSync: true }).catch(() => undefined);
         }
         updated = await adminVerifyParcelInFirestore(parcel);
-        void apiAdminVerifyParcel(parcel.id).catch(() => undefined);
       } else {
         updated = await apiAdminVerifyParcel(parcel.id);
       }
 
-      setParcels((prev) => prev.map((p) => (p.id === updated!.id ? updated! : p)));
+      setParcels((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
       if (inspectParcel?.id === updated.id) setInspectParcel(updated);
       setFeedbackBanner({
         type: 'success',
-        text: `Verified ${updated.cadastralRef} — now published live as Approved on Access Lands.`
+        text: usedFallbackOnly
+          ? `Verified ${updated.cadastralRef} in Cloud Firestore fallback (Express admin session inactive).`
+          : `Verified ${updated.cadastralRef} — now published live as Approved on Access Lands.`
       });
       void fetchOverview(true);
     } catch (err) {
@@ -622,22 +637,34 @@ export const AdminApp: React.FC = () => {
     setActionBusyId(parcel.id);
     setFeedbackBanner(null);
     try {
-      let updated: ParcelRecord | null = null;
-      if (isCloudAdmin) {
+      let updated: ParcelRecord;
+      let usedFallbackOnly = false;
+      if (hasActiveExpressAdminToken()) {
+        updated = await apiAdminRejectParcel(parcel.id, 'Rejected by Registry Admin');
+        expressParcelsRef.current = [
+          updated,
+          ...expressParcelsRef.current.filter((p) => p.id !== updated.id)
+        ];
+        if (isCloudAdmin) {
+          void syncParcelsToFirestore([updated], { isAdminSync: true }).catch(() => undefined);
+        }
+      } else if (isCloudAdmin) {
+        usedFallbackOnly = true;
         if (!cloudParcelsRef.current.some((p) => p.id === parcel.id)) {
           await syncParcelsToFirestore([parcel], { isAdminSync: true }).catch(() => undefined);
         }
         updated = await adminRejectParcelInFirestore(parcel, 'Rejected by Registry Admin');
-        void apiAdminRejectParcel(parcel.id, 'Rejected by Registry Admin').catch(() => undefined);
       } else {
         updated = await apiAdminRejectParcel(parcel.id, 'Rejected by Registry Admin');
       }
 
-      setParcels((prev) => prev.map((p) => (p.id === updated!.id ? updated! : p)));
+      setParcels((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
       if (inspectParcel?.id === updated.id) setInspectParcel(updated);
       setFeedbackBanner({
         type: 'success',
-        text: `Rejected ${updated.cadastralRef}. It will remain hidden from Access Lands.`
+        text: usedFallbackOnly
+          ? `Rejected ${updated.cadastralRef} in Cloud Firestore fallback (Express admin session inactive).`
+          : `Rejected ${updated.cadastralRef}. It will remain hidden from Access Lands.`
       });
       void fetchOverview(true);
     } catch (err) {
@@ -654,18 +681,30 @@ export const AdminApp: React.FC = () => {
     setActionBusyId(parcel.id);
     setFeedbackBanner(null);
     try {
-      let updated: ParcelRecord | null = null;
-      if (isCloudAdmin) {
+      let updated: ParcelRecord;
+      let usedFallbackOnly = false;
+      if (hasActiveExpressAdminToken()) {
+        updated = await apiAdminSetParcelPending(parcel.id);
+        expressParcelsRef.current = [
+          updated,
+          ...expressParcelsRef.current.filter((p) => p.id !== updated.id)
+        ];
+        if (isCloudAdmin) {
+          void syncParcelsToFirestore([updated], { isAdminSync: true }).catch(() => undefined);
+        }
+      } else if (isCloudAdmin) {
+        usedFallbackOnly = true;
         updated = await adminSetParcelPendingInFirestore(parcel);
-        void apiAdminSetParcelPending(parcel.id).catch(() => undefined);
       } else {
         updated = await apiAdminSetParcelPending(parcel.id);
       }
-      setParcels((prev) => prev.map((p) => (p.id === updated!.id ? updated! : p)));
+      setParcels((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
       if (inspectParcel?.id === updated.id) setInspectParcel(updated);
       setFeedbackBanner({
         type: 'success',
-        text: `Moved ${updated.cadastralRef} back to Pending Admin Verification.`
+        text: usedFallbackOnly
+          ? `Moved ${updated.cadastralRef} back to Pending in Cloud Firestore fallback.`
+          : `Moved ${updated.cadastralRef} back to Pending Admin Verification.`
       });
     } catch (err) {
       setFeedbackBanner({
@@ -682,22 +721,33 @@ export const AdminApp: React.FC = () => {
     if (!revokeTarget) return;
     setActionBusyId(revokeTarget.id);
     setFeedbackBanner(null);
-    const reasonText = revokeReason.trim() || 'Administrative revocation executed from Admin Console';
+    const reasonText =
+      revokeReason.trim() || 'Administrative revocation executed from Admin Console';
     try {
-      let updated: ParcelRecord | null = null;
-      if (isCloudAdmin) {
+      let updated: ParcelRecord;
+      let usedFallbackOnly = false;
+      if (hasActiveExpressAdminToken()) {
+        updated = await apiAdminRevokeParcel(
+          revokeTarget.id,
+          revokeGround,
+          revokeGazette.trim(),
+          reasonText
+        );
+        expressParcelsRef.current = [
+          updated,
+          ...expressParcelsRef.current.filter((p) => p.id !== updated.id)
+        ];
+        if (isCloudAdmin) {
+          void syncParcelsToFirestore([updated], { isAdminSync: true }).catch(() => undefined);
+        }
+      } else if (isCloudAdmin) {
+        usedFallbackOnly = true;
         updated = await adminRevokeParcelInFirestore(
           revokeTarget,
           revokeGround,
           revokeGazette.trim(),
           reasonText
         );
-        void apiAdminRevokeParcel(
-          revokeTarget.id,
-          revokeGround,
-          revokeGazette.trim(),
-          reasonText
-        ).catch(() => undefined);
       } else {
         updated = await apiAdminRevokeParcel(
           revokeTarget.id,
@@ -706,12 +756,14 @@ export const AdminApp: React.FC = () => {
           reasonText
         );
       }
-      setParcels((prev) => prev.map((p) => (p.id === updated!.id ? updated! : p)));
+      setParcels((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
       setRevokeTarget(null);
       setRevokeReason('');
       setFeedbackBanner({
         type: 'success',
-        text: `Revoked statutory title for ${updated.cadastralRef}.`
+        text: usedFallbackOnly
+          ? `Revoked statutory title for ${updated.cadastralRef} in Cloud Firestore fallback.`
+          : `Revoked statutory title for ${updated.cadastralRef}.`
       });
       void fetchOverview(true);
     } catch (err) {
@@ -728,9 +780,14 @@ export const AdminApp: React.FC = () => {
     setActionBusyId(parcel.id);
     try {
       deletedParcelIdsRef.current.add(parcel.id);
-      if (isCloudAdmin) {
+      if (hasActiveExpressAdminToken()) {
+        await apiAdminDeleteParcel(parcel.id);
+        expressParcelsRef.current = expressParcelsRef.current.filter((p) => p.id !== parcel.id);
+        if (isCloudAdmin) {
+          void adminDeleteParcelInFirestore(parcel.id).catch(() => undefined);
+        }
+      } else if (isCloudAdmin) {
         await adminDeleteParcelInFirestore(parcel.id);
-        void apiAdminDeleteParcel(parcel.id).catch(() => undefined);
       } else {
         await apiAdminDeleteParcel(parcel.id);
       }
@@ -1349,6 +1406,26 @@ export const AdminApp: React.FC = () => {
 
       {/* Main Content */}
       <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-8 py-6 space-y-6">
+        {isUsingFirestoreFallback && (
+          <div className="rounded-xl px-4 py-3 text-xs flex flex-wrap items-center justify-between gap-3 border bg-amber-950/70 border-amber-500/60 text-amber-200">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+              <span>
+                <strong>Authoritative Express/Supabase Registry Unreachable</strong> — displaying
+                cached Cloud Firestore snapshot only. Spatial verification and lifecycle statuses
+                may be stale until backend connectivity is restored.
+                {expressSyncError ? ` (${expressSyncError})` : ''}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => void fetchOverview(false)}
+              className="px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-100 font-semibold transition-colors"
+            >
+              Retry Backend Sync
+            </button>
+          </div>
+        )}
         {isOfflineMode && !isCloudAdmin && (
           <div className="rounded-xl px-4 py-3 text-xs flex flex-wrap items-center justify-between gap-3 border bg-amber-950/60 border-amber-500/50 text-amber-200">
             <div className="flex items-center gap-2">
