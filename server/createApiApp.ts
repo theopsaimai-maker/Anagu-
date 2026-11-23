@@ -9,8 +9,10 @@ import type {
   RevocationGround
 } from '../src/types/anagu.ts';
 import {
+  isAdminInviteConfigured,
   isDemoAccountsEnabled,
   isOriginAllowed,
+  isSigningSecretConfigured,
   signAdminToken,
   signUserToken,
   validateAuthConfig,
@@ -720,6 +722,26 @@ export function attachApiRoutes(app: express.Express): void {
   // ============================================================================
   // SEPARATE ADMIN PORTAL ROUTES (/api/admin/*)
   // ============================================================================
+  let firstAdminClaimQueue: Promise<void> = Promise.resolve();
+
+  app.get('/api/admin/auth/status', async (_req, res) => {
+    try {
+      const inviteCodeConfigured = isAdminInviteConfigured();
+      const signingSecretConfigured = isSigningSecretConfigured();
+      const existingAdmins = await listAdmins();
+      const hasAdmins = existingAdmins.length > 0;
+      return res.json({
+        inviteCodeConfigured,
+        hasAdmins,
+        canBootstrapFirstAdmin: !inviteCodeConfigured && !hasAdmins,
+        signingSecretConfigured
+      });
+    } catch (err) {
+      console.error('[anagu/admin] Auth status error:', err instanceof Error ? err.message : err);
+      return res.status(500).json({ error: 'Unable to check administrator setup status.' });
+    }
+  });
+
   app.post('/api/admin/auth/signup', async (req, res) => {
     try {
       if (!checkRateLimit(req, 'admin-signup', 10, 15 * 60 * 1000)) {
@@ -727,30 +749,88 @@ export function attachApiRoutes(app: express.Express): void {
       }
 
       const bearerToken = extractBearerToken(req);
-      const authorizedByAdmin = bearerToken ? Boolean(verifyAdminToken(bearerToken)) : false;
+      let authorizedByAdmin = false;
+      if (bearerToken) {
+        try {
+          authorizedByAdmin = Boolean(verifyAdminToken(bearerToken));
+        } catch {
+          authorizedByAdmin = false;
+        }
+      }
+      const inviteConfigured = isAdminInviteConfigured();
       const authorizedByInvite = verifyAdminInviteCode(req.body?.inviteCode);
 
+      const { fullName, email, phone, department, state, password } = req.body ?? {};
+      const validateFields = () =>
+        typeof fullName === 'string' &&
+        typeof email === 'string' &&
+        typeof phone === 'string' &&
+        typeof password === 'string' &&
+        Boolean(fullName.trim()) &&
+        fullName.trim().length <= 160 &&
+        EMAIL_PATTERN.test(email.trim()) &&
+        email.trim().length <= 180 &&
+        PHONE_PATTERN.test(phone.trim()) &&
+        password.length >= 8 &&
+        password.length <= 256;
+
       if (!authorizedByAdmin && !authorizedByInvite) {
-        return res.status(403).json({
-          error:
-            'Administrator registration is restricted. An existing authorized administrator session or valid invitation code is required.'
+        if (inviteConfigured) {
+          return res.status(403).json({
+            error:
+              'Administrator registration is restricted. An existing authorized administrator session or valid invitation code is required.'
+          });
+        }
+
+        // First-run setup mode: when ADMIN_INVITE_SECRET is unset, atomically allow claiming
+        // the very first administrator account and lock immediately once claimed.
+        let releaseLock!: () => void;
+        const prevLock = firstAdminClaimQueue;
+        firstAdminClaimQueue = new Promise<void>((resolve) => {
+          releaseLock = resolve;
         });
+        await prevLock;
+
+        try {
+          const existingAdmins = await listAdmins();
+          if (existingAdmins.length > 0) {
+            return res.status(403).json({
+              error:
+                'An administrator account is already registered. Sign in with that account, or configure ADMIN_INVITE_SECRET (16+ characters) in your hosting Environment Variables to register additional admins.'
+            });
+          }
+
+          if (!validateFields()) {
+            return res
+              .status(400)
+              .json({ error: 'Valid full name, email, phone, and password (8–256 chars) are required.' });
+          }
+
+          const result = await signupAdmin({
+            fullName,
+            email,
+            phone,
+            department:
+              typeof department === 'string' && department.trim()
+                ? department.trim().slice(0, 160)
+                : 'Land Registry Administration',
+            state:
+              typeof state === 'string' && state.trim()
+                ? state.trim().slice(0, 100)
+                : 'Federal Capital Territory (Abuja)',
+            password
+          });
+          if (result.error || !result.admin) {
+            return res.status(409).json({ error: result.error || 'Could not create admin account.' });
+          }
+          const token = signAdminToken(result.admin);
+          return res.status(201).json({ admin: result.admin, token, firstAdminBootstrapped: true });
+        } finally {
+          releaseLock();
+        }
       }
 
-      const { fullName, email, phone, department, state, password } = req.body ?? {};
-      if (
-        typeof fullName !== 'string' ||
-        typeof email !== 'string' ||
-        typeof phone !== 'string' ||
-        typeof password !== 'string' ||
-        !fullName.trim() ||
-        fullName.trim().length > 160 ||
-        !EMAIL_PATTERN.test(email.trim()) ||
-        email.trim().length > 180 ||
-        !PHONE_PATTERN.test(phone.trim()) ||
-        password.length < 8 ||
-        password.length > 256
-      ) {
+      if (!validateFields()) {
         return res
           .status(400)
           .json({ error: 'Valid full name, email, phone, and password (8–256 chars) are required.' });
@@ -775,7 +855,14 @@ export function attachApiRoutes(app: express.Express): void {
       const token = signAdminToken(result.admin);
       return res.status(201).json({ admin: result.admin, token });
     } catch (err) {
-      console.error('[anagu/admin] Signup error:', err instanceof Error ? err.message : err);
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[anagu/admin] Signup error:', msg);
+      if (msg.includes('AUTH_TOKEN_SECRET') || msg.includes('ADMIN_TOKEN_SECRET')) {
+        return res.status(500).json({
+          error:
+            'Server signing secret is not configured yet. Add a 32+ character AUTH_TOKEN_SECRET in your hosting Environment Variables (e.g. Vercel → Settings → Environment Variables) and redeploy, or use Sign In with Google.'
+        });
+      }
       return res.status(500).json({ error: 'Unable to create admin account right now.' });
     }
   });
@@ -802,7 +889,14 @@ export function attachApiRoutes(app: express.Express): void {
       const token = signAdminToken(result.admin);
       return res.json({ admin: result.admin, token });
     } catch (err) {
-      console.error('[anagu/admin] Login error:', err instanceof Error ? err.message : err);
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[anagu/admin] Login error:', msg);
+      if (msg.includes('AUTH_TOKEN_SECRET') || msg.includes('ADMIN_TOKEN_SECRET')) {
+        return res.status(500).json({
+          error:
+            'Server signing secret is not configured yet. Add a 32+ character AUTH_TOKEN_SECRET in your hosting Environment Variables (e.g. Vercel → Settings → Environment Variables) and redeploy, or use Sign In with Google.'
+        });
+      }
       return res.status(500).json({ error: 'Unable to sign in right now.' });
     }
   });

@@ -12,6 +12,13 @@ import { buildApiUrl, getCandidateApiBases, setResolvedApiBase } from './apiBase
 export const ADMIN_TOKEN_KEY = 'anagu_admin_token_v1';
 export const ADMIN_USER_KEY = 'anagu_admin_user_v1';
 
+export interface AdminAuthStatus {
+  inviteCodeConfigured: boolean;
+  hasAdmins: boolean;
+  canBootstrapFirstAdmin: boolean;
+  signingSecretConfigured: boolean;
+}
+
 export interface AdminOverviewResponse {
   parcels: ParcelRecord[];
   users: AuthUser[];
@@ -100,6 +107,7 @@ async function adminRequest<T>(path: string, options?: RequestInit): Promise<T> 
         );
       }
 
+      const hasJsonErrorMessage = isJson && typeof serverMsg === 'string' && serverMsg.trim().length > 0;
       const isRouteMissing =
         !isJson ||
         (response.status === 404 &&
@@ -107,9 +115,8 @@ async function adminRequest<T>(path: string, options?: RequestInit): Promise<T> 
           serverMsg !== 'User not found.' &&
           serverMsg !== 'Inquiry record not found.') ||
         response.status === 405 ||
-        response.status === 502 ||
-        response.status === 503 ||
-        response.status === 504;
+        (!hasJsonErrorMessage &&
+          (response.status === 502 || response.status === 503 || response.status === 504));
 
       if (isRouteMissing) {
         lastUnavailable = true;
@@ -126,6 +133,10 @@ async function adminRequest<T>(path: string, options?: RequestInit): Promise<T> 
 
   void lastUnavailable;
   throw new AdminBackendUnavailableError();
+}
+
+export async function apiAdminAuthStatus(): Promise<AdminAuthStatus> {
+  return adminRequest<AdminAuthStatus>('/api/admin/auth/status');
 }
 
 export async function apiAdminSignup(payload: {

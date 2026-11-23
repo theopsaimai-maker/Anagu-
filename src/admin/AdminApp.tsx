@@ -52,6 +52,8 @@ import {
   ADMIN_TOKEN_KEY,
   ADMIN_USER_KEY,
   AdminAuthError,
+  type AdminAuthStatus,
+  apiAdminAuthStatus,
   apiAdminDeleteInquiry,
   apiAdminDeleteParcel,
   apiAdminDeleteUser,
@@ -175,6 +177,7 @@ export const AdminApp: React.FC = () => {
   const [signupConfirm, setSignupConfirm] = useState('');
   const [signupInviteCode, setSignupInviteCode] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
+  const [authStatus, setAuthStatus] = useState<AdminAuthStatus | null>(null);
   const [unauthorizedDomainInfo, setUnauthorizedDomainInfo] = useState<{
     hostname: string;
     projectId: string;
@@ -562,15 +565,35 @@ export const AdminApp: React.FC = () => {
     }
   };
 
+  useEffect(() => {
+    if (adminUser) return;
+    let active = true;
+    void apiAdminAuthStatus()
+      .then((status) => {
+        if (active) setAuthStatus(status);
+      })
+      .catch(() => {
+        // Ignore if Express API is offline; Google Sign-In remains available
+      });
+    return () => {
+      active = false;
+    };
+  }, [adminUser]);
+
+  const canBootstrapFirstAdmin = Boolean(authStatus?.canBootstrapFirstAdmin);
+
   const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
+    setUnauthorizedDomainInfo(null);
     if (!signupFullName.trim() || !signupEmail.trim() || !signupPhone.trim()) {
       setAuthError('Please complete all required admin identity fields.');
       return;
     }
-    if (!signupInviteCode.trim()) {
-      setAuthError('An authorized Admin Invitation Code is required to register an administrator account.');
+    if (!canBootstrapFirstAdmin && !signupInviteCode.trim()) {
+      setAuthError(
+        'An authorized Admin Invitation Code is required (set via ADMIN_INVITE_SECRET in your server/Vercel Environment Variables).'
+      );
       return;
     }
     if (signupPassword.length < 8) {
@@ -590,7 +613,7 @@ export const AdminApp: React.FC = () => {
         department: signupDepartment.trim(),
         state: signupState,
         password: signupPassword,
-        inviteCode: signupInviteCode.trim()
+        ...(signupInviteCode.trim() ? { inviteCode: signupInviteCode.trim() } : {})
       });
       persistSession(res.admin, res.token);
     } catch (err) {
@@ -1222,17 +1245,31 @@ export const AdminApp: React.FC = () => {
                   </label>
                 </div>
 
-                <label className="block space-y-1.5">
-                  <span className="text-xs font-medium text-slate-300">Admin Invitation Code *</span>
-                  <input
-                    type="password"
-                    required
-                    value={signupInviteCode}
-                    onChange={(e) => setSignupInviteCode(e.target.value)}
-                    placeholder="Enter administrator invitation code"
-                    className="w-full px-3 py-2.5 bg-slate-950 border border-slate-700 focus:border-emerald-500 rounded-xl text-xs text-white outline-none"
-                  />
-                </label>
+                {canBootstrapFirstAdmin ? (
+                  <div className="p-3 rounded-xl bg-emerald-950/50 border border-emerald-500/40 text-emerald-100 text-[11px] leading-relaxed">
+                    <span className="font-bold text-emerald-300">First-Run Admin Setup:</span> No
+                    administrator account exists on this server yet. Claim the primary admin account
+                    below without an invitation code — this one-time setup locks automatically once
+                    created.
+                  </div>
+                ) : (
+                  <label className="block space-y-1.5">
+                    <span className="text-xs font-medium text-slate-300">Admin Invitation Code *</span>
+                    <input
+                      type="password"
+                      required
+                      value={signupInviteCode}
+                      onChange={(e) => setSignupInviteCode(e.target.value)}
+                      placeholder="Enter administrator invitation code"
+                      className="w-full px-3 py-2.5 bg-slate-950 border border-slate-700 focus:border-emerald-500 rounded-xl text-xs text-white outline-none"
+                    />
+                    <span className="block text-[11px] text-slate-400">
+                      Configured by the project owner via{' '}
+                      <code className="text-emerald-300 font-mono">ADMIN_INVITE_SECRET</code> (16+
+                      characters) in Vercel / server Environment Variables.
+                    </span>
+                  </label>
+                )}
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <label className="block space-y-1.5">

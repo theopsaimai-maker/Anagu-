@@ -143,6 +143,20 @@ export function validateAuthConfig(): void {
   getSigningSecret();
 }
 
+export function isSigningSecretConfigured(): boolean {
+  try {
+    getSigningSecret();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function isAdminInviteConfigured(): boolean {
+  const expected = process.env.ADMIN_INVITE_SECRET?.trim() || '';
+  return expected.length >= MIN_ADMIN_INVITE_LENGTH;
+}
+
 export function verifyAdminInviteCode(candidate: unknown): boolean {
   if (typeof candidate !== 'string') return false;
   const trimmedCandidate = candidate.trim();
