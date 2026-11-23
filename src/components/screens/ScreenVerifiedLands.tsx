@@ -117,11 +117,12 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
   const isMobile = useMemo(() => isMobileDevice(), []);
 
   useEffect(() => {
+    if (!buyListing) return;
     const unsubscribe = subscribeEip6963Wallets((wallets) => {
       setDiscoveredWallets(wallets);
     });
     return unsubscribe;
-  }, []);
+  }, [buyListing]);
 
   useEffect(() => {
     const provider = connectedWallet?.provider;
@@ -284,7 +285,7 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
     if (connectedWallet) {
       setWalletStatus('connected');
     } else {
-      void triggerWalletConnection();
+      setWalletStatus('idle');
     }
   };
 

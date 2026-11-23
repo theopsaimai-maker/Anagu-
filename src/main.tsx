@@ -2,7 +2,10 @@ import { StrictMode, Suspense, lazy } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
+import { installBrowserExtensionErrorGuard } from './lib/web3Wallet.ts';
 import './index.css';
+
+installBrowserExtensionErrorGuard();
 
 const LazyAdminApp = lazy(() =>
   import('./admin/AdminApp.tsx').then((m) => ({ default: m.AdminApp }))

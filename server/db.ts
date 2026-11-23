@@ -304,6 +304,7 @@ const globalStore = globalThis as unknown as {
   _anaguPgPoolUrl?: string;
   _anaguPgDisabledUntil?: number;
   _anaguPgWarned?: boolean;
+  _anaguSupabaseDisabledUntil?: number;
   _anaguSupabaseWarned?: boolean;
   _anaguSchemaPromise?: Promise<void> | null;
   _anaguStoreLoaded?: boolean;
@@ -335,6 +336,8 @@ function isMemoryOnlyTestMode(): boolean {
 export function resetMemoryStoreForTests(): void {
   globalStore._anaguStoreLoaded = false;
   globalStore._anaguStorePath = undefined;
+  globalStore._anaguSupabaseDisabledUntil = undefined;
+  globalStore._anaguSupabaseWarned = false;
   globalStore._anaguMemoryUsers = undefined;
   globalStore._anaguMemoryAdmins = undefined;
   globalStore._anaguMemoryParcels = undefined;
@@ -471,9 +474,20 @@ export function isDatabaseConfigured(): boolean {
 
 export function isSupabaseRestConfigured(): boolean {
   if (isMemoryOnlyTestMode()) return false;
+  if (globalStore._anaguSupabaseDisabledUntil && Date.now() < globalStore._anaguSupabaseDisabledUntil) {
+    return false;
+  }
   const url = (process.env.SUPABASE_URL || '').trim();
   const key = (process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
-  return url.startsWith('https://') && key.length > 10 && !url.includes('[PROJECT-REF]');
+  if (!url || key.length <= 10 || url.includes('[PROJECT-REF]')) {
+    return false;
+  }
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'https:' && parsed.hostname.length > 0;
+  } catch {
+    return false;
+  }
 }
 
 function getSupabaseConfig(): { url: string; key: string } | null {
@@ -591,8 +605,21 @@ function tripPgCircuit(err: unknown, context: string): void {
   globalStore._anaguSchemaPromise = null;
   if (!globalStore._anaguPgWarned) {
     globalStore._anaguPgWarned = true;
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[anagu/db] PostgreSQL unavailable during ${context} (${msg}); falling back to Supabase REST / resilient store.`);
+    if (process.env.ANAGU_DEBUG_DB === 'true') {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log(`[anagu/db] Switched to fallback store during ${context} (${msg}).`);
+    }
+  }
+}
+
+function tripSupabaseCircuit(err: unknown, context: string): void {
+  globalStore._anaguSupabaseDisabledUntil = Date.now() + 600_000;
+  if (!globalStore._anaguSupabaseWarned) {
+    globalStore._anaguSupabaseWarned = true;
+    if (process.env.ANAGU_DEBUG_DB === 'true') {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log(`[anagu/db] Switched to resilient local store during ${context} (${msg}).`);
+    }
   }
 }
 
@@ -600,15 +627,24 @@ function shouldFallbackFromSupabase(err: unknown, context: string): boolean {
   if (err instanceof SupabaseTableMissingError) {
     return true;
   }
-  if (isTransientConnectionError(err)) {
-    if (!globalStore._anaguSupabaseWarned) {
-      globalStore._anaguSupabaseWarned = true;
-      const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[anagu/db] Supabase REST transient error during ${context} (${msg}); using in-memory store.`);
-    }
+  const status = (err as { status?: number })?.status;
+  if (
+    isTransientConnectionError(err) ||
+    (typeof status === 'number' && status >= 500)
+  ) {
+    tripSupabaseCircuit(err, context);
     return true;
   }
   return false;
+}
+
+function tryParseJson(text: string): unknown {
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
 }
 
 async function supabaseRest<T>(
@@ -632,18 +668,22 @@ async function supabaseRest<T>(
     method: options?.method || 'GET',
     headers,
     body: options?.body !== undefined ? JSON.stringify(options.body) : undefined,
-    signal: AbortSignal.timeout(6000)
+    signal: AbortSignal.timeout(4000)
   });
 
   const text = await res.text();
-  const parsed = text ? JSON.parse(text) : null;
+  const parsed = tryParseJson(text) as { code?: string; message?: string; error?: string } | null;
 
   if (!res.ok) {
     const code = parsed?.code;
     if (res.status === 404 || code === 'PGRST205' || code === '42P01') {
       throw new SupabaseTableMissingError(parsed?.message || 'Supabase tables not initialized yet.');
     }
-    throw new Error(parsed?.message || parsed?.error || `Supabase error (${res.status})`);
+    const err = new Error(parsed?.message || parsed?.error || `Supabase error (${res.status})`) as Error & {
+      status?: number;
+    };
+    err.status = res.status;
+    throw err;
   }
 
   return parsed as T;
@@ -662,11 +702,11 @@ async function supabaseRpc<T>(fnName: string, params: Record<string, unknown>): 
       'Content-Type': 'application/json'
     },
     body: JSON.stringify(params),
-    signal: AbortSignal.timeout(8000)
+    signal: AbortSignal.timeout(5000)
   });
 
   const text = await res.text();
-  const parsed = text ? JSON.parse(text) : null;
+  const parsed = tryParseJson(text) as { code?: string; message?: string; error?: string } | null;
 
   if (!res.ok) {
     const code = parsed?.code;
@@ -676,7 +716,9 @@ async function supabaseRpc<T>(fnName: string, params: Record<string, unknown>): 
         `PostGIS RPC "${fnName}" is not installed in Supabase yet. Apply supabase/migrations/001_postgis_spatial.sql first.`
       );
     }
-    throw new Error(msg);
+    const err = new Error(msg) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
   }
 
   return parsed as T;
@@ -1701,50 +1743,54 @@ export async function verifyParcelSpatial(
   }
 
   if (isSupabaseRestConfigured()) {
-    const spatial = await supabaseRpc<SpatialVerificationResult>('anagu_verify_parcel_spatial', {
-      p_parcel_id: parcelId,
-      p_buffer_meters: bufferMeters,
-      p_enforce_buffer: enforceBuffer,
-      p_persist_verification: persist
-    });
-    if (!spatial || !spatial.found) {
+    try {
+      const spatial = await supabaseRpc<SpatialVerificationResult>('anagu_verify_parcel_spatial', {
+        p_parcel_id: parcelId,
+        p_buffer_meters: bufferMeters,
+        p_enforce_buffer: enforceBuffer,
+        p_persist_verification: persist
+      });
+      if (!spatial || !spatial.found) {
+        return {
+          parcel: null,
+          spatial: spatial || {
+            found: false,
+            engine: 'postgis',
+            parcelId,
+            srid: 4326,
+            bufferMeters,
+            enforceBuffer,
+            hasGeometry: false,
+            isValid: false,
+            validReason: 'Parcel not found.',
+            vertexCount: 0,
+            computedAreaSqm: null,
+            computedPerimeterM: null,
+            centroidLat: null,
+            centroidLng: null,
+            hasTrueOverlap: false,
+            trueOverlapCount: 0,
+            boundaryContactCount: 0,
+            bufferBreachCount: 0,
+            trueOverlaps: [],
+            boundaryContacts: [],
+            bufferBreaches: [],
+            passed: false,
+            persisted: false,
+            queryDurationMs: 1
+          }
+        };
+      }
+      const rows = await supabaseRest<StoredParcelRow[]>(
+        `anagu_parcels?select=*&id=eq.${encodeURIComponent(parcelId)}&limit=1`
+      );
       return {
-        parcel: null,
-        spatial: spatial || {
-          found: false,
-          engine: 'postgis',
-          parcelId,
-          srid: 4326,
-          bufferMeters,
-          enforceBuffer,
-          hasGeometry: false,
-          isValid: false,
-          validReason: 'Parcel not found.',
-          vertexCount: 0,
-          computedAreaSqm: null,
-          computedPerimeterM: null,
-          centroidLat: null,
-          centroidLng: null,
-          hasTrueOverlap: false,
-          trueOverlapCount: 0,
-          boundaryContactCount: 0,
-          bufferBreachCount: 0,
-          trueOverlaps: [],
-          boundaryContacts: [],
-          bufferBreaches: [],
-          passed: false,
-          persisted: false,
-          queryDurationMs: 1
-        }
+        parcel: rows[0] ? mapParcelRow(rows[0]) : null,
+        spatial
       };
+    } catch (err) {
+      if (!shouldFallbackFromSupabase(err, 'verifyParcelSpatial')) throw err;
     }
-    const rows = await supabaseRest<StoredParcelRow[]>(
-      `anagu_parcels?select=*&id=eq.${encodeURIComponent(parcelId)}&limit=1`
-    );
-    return {
-      parcel: rows[0] ? mapParcelRow(rows[0]) : null,
-      spatial
-    };
   }
 
   if (isMemoryOnlyTestMode()) {

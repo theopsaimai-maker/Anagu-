@@ -201,6 +201,62 @@ export function discoverWalletsOnce(timeoutMs = 150): Promise<DiscoveredWallet[]
   });
 }
 
+const EXTENSION_PROTOCOL_RE = /(chrome-extension|moz-extension|safari-extension|safari-web-extension):\/\//i;
+
+function isExtensionOnlyReason(reason: unknown): boolean {
+  if (!reason || typeof reason !== 'object') return false;
+  const errObj = reason as { stack?: unknown; message?: unknown };
+  const stack = typeof errObj.stack === 'string' ? errObj.stack : '';
+  if (!stack || !EXTENSION_PROTOCOL_RE.test(stack)) return false;
+  const origin = typeof window !== 'undefined' && window.location?.origin ? window.location.origin : '';
+  if (origin && stack.includes(origin)) return false;
+  return true;
+}
+
+export function installBrowserExtensionErrorGuard(): void {
+  if (typeof window === 'undefined') return;
+  const win = window as Window & { __anaguExtGuardInstalled?: boolean };
+  if (win.__anaguExtGuardInstalled) return;
+  win.__anaguExtGuardInstalled = true;
+
+  window.addEventListener(
+    'unhandledrejection',
+    (event: PromiseRejectionEvent) => {
+      if (isExtensionOnlyReason(event.reason)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    },
+    true
+  );
+
+  window.addEventListener(
+    'error',
+    (event: ErrorEvent) => {
+      if (
+        (typeof event.filename === 'string' && EXTENSION_PROTOCOL_RE.test(event.filename)) ||
+        isExtensionOnlyReason(event.error)
+      ) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    },
+    true
+  );
+
+  const originalWarn = console.warn.bind(console);
+  console.warn = (...args: unknown[]) => {
+    const first = typeof args[0] === 'string' ? args[0] : '';
+    if (
+      first.includes('Error restoring session') &&
+      args.some((arg) => isExtensionOnlyReason(arg))
+    ) {
+      return;
+    }
+    originalWarn(...args);
+  };
+}
+
 export function formatWalletError(err: unknown): string {
   const errorObj = err as { code?: number; message?: string } | undefined;
   if (errorObj?.code === 4001) {
@@ -208,6 +264,9 @@ export function formatWalletError(err: unknown): string {
   }
   if (errorObj?.code === -32002) {
     return 'A wallet prompt is already open. Check your wallet extension or mobile app to approve.';
+  }
+  if (typeof errorObj?.message === 'string' && /failed to connect to metamask/i.test(errorObj.message)) {
+    return 'MetaMask could not connect inside this embedded preview frame. Unlock MetaMask or open the app in a full browser tab to connect your wallet.';
   }
   return errorObj?.message || 'Unable to connect to your Web3 wallet.';
 }

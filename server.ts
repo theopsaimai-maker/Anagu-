@@ -102,18 +102,47 @@ export function injectQuery(url, queryToInject) {
 export class ErrorOverlay extends HTMLElement {}
 `);
     });
-    const { createServer: createViteServer } = await import('vite');
-    const vite = await createViteServer({
-      server: {
-        middlewareMode: true,
-        hmr: false,
-        ws: false,
-        watch: process.env.DISABLE_HMR === 'true' ? null : undefined
-      },
-      appType: 'spa'
+    let viteMiddleware: express.RequestHandler | null = null;
+    let viteInitError: unknown = null;
+    const viteReady = (async () => {
+      try {
+        const { createServer: createViteServer } = await import('vite');
+        const vite = await createViteServer({
+          optimizeDeps: {
+            entries: ['index.html', 'admin.html']
+          },
+          server: {
+            middlewareMode: true,
+            hmr: false,
+            ws: false,
+            watch: process.env.DISABLE_HMR === 'true' ? null : {
+              ignored: ['**/contracts/**', '**/blockchain/**', '**/.anagu-data/**', '**/supabase/**']
+            }
+          },
+          appType: 'spa'
+        });
+        viteServer = vite;
+        viteMiddleware = vite.middlewares;
+      } catch (err) {
+        viteInitError = err;
+        console.error('[anagu/server] Vite dev middleware initialization error:', err);
+      }
+    })();
+
+    app.use((req, res, next) => {
+      if (viteMiddleware) {
+        return viteMiddleware(req, res, next);
+      }
+      viteReady
+        .then(() => {
+          if (viteMiddleware) {
+            viteMiddleware(req, res, next);
+          } else {
+            next(viteInitError || new Error('Vite dev server did not initialize.'));
+          }
+        })
+        .catch(next);
     });
-    viteServer = vite;
-    app.use(vite.middlewares);
   } else {
     const distDir = path.join(__dirname, 'dist');
     app.use(express.static(distDir));
@@ -143,19 +172,30 @@ export class ErrorOverlay extends HTMLElement {}
     console.error('[anagu/server] HTTP server error:', err);
   });
 
+  let shuttingDown = false;
   const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.log(`[anagu/server] Received ${signal}, shutting down cleanly...`);
+    const forceTimer = setTimeout(() => process.exit(0), 1500);
+    forceTimer.unref();
     try {
+      httpServer.close(() => {
+        // closed
+      });
+      if (typeof httpServer.closeAllConnections === 'function') {
+        httpServer.closeAllConnections();
+      }
       if (viteServer) {
-        await viteServer.close();
+        await Promise.race([
+          viteServer.close(),
+          new Promise<void>((resolve) => setTimeout(resolve, 1000))
+        ]);
       }
     } catch {
-      // Ignore vite close errors during shutdown
+      // Ignore close errors during shutdown
     }
-    httpServer.close(() => {
-      process.exit(0);
-    });
-    setTimeout(() => process.exit(0), 2000).unref();
+    process.exit(0);
   };
 
   process.on('SIGTERM', () => void shutdown('SIGTERM'));

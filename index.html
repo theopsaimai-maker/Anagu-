@@ -12,6 +12,36 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+    <script>
+      (function () {
+        if (window.__anaguExtGuardInstalled) return;
+        window.__anaguExtGuardInstalled = true;
+        var extRe = /(chrome-extension|moz-extension|safari-extension|safari-web-extension):\/\//i;
+        function isExtOnly(r) {
+          if (!r || typeof r !== 'object') return false;
+          var s = typeof r.stack === 'string' ? r.stack : '';
+          if (!s || !extRe.test(s)) return false;
+          var o = window.location && window.location.origin ? window.location.origin : '';
+          return !(o && s.indexOf(o) !== -1);
+        }
+        window.addEventListener('unhandledrejection', function (e) {
+          if (isExtOnly(e.reason)) { e.preventDefault(); e.stopImmediatePropagation(); }
+        }, true);
+        window.addEventListener('error', function (e) {
+          if ((typeof e.filename === 'string' && extRe.test(e.filename)) || isExtOnly(e.error)) {
+            e.preventDefault(); e.stopImmediatePropagation();
+          }
+        }, true);
+        var origWarn = console.warn.bind(console);
+        console.warn = function () {
+          var args = Array.prototype.slice.call(arguments);
+          if (typeof args[0] === 'string' && args[0].indexOf('Error restoring session') !== -1 && args.some(isExtOnly)) {
+            return;
+          }
+          origWarn.apply(console, args);
+        };
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
