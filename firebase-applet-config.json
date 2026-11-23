@@ -1,12 +1,12 @@
 {
-  "projectId": "sustained-watch-vw2pc",
-  "appId": "1:261089723476:web:509f8b5afe39a71ef999c1",
-  "apiKey": "AIzaSyDMNR1Jr3lXwBq-sr7CEuV9Rg1GQdp9eSg",
-  "authDomain": "sustained-watch-vw2pc.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-anagu-15e01bf3-acd7-4864-b258-cd16f2daa21b",
-  "storageBucket": "sustained-watch-vw2pc.firebasestorage.app",
-  "messagingSenderId": "261089723476",
+  "projectId": "anagu-land-registry",
+  "appId": "1:291028903:web:38dea94f9ee0e215098082",
+  "apiKey": "AIzaSyDnTvCpdAOAO1yhebl4PbUFB5JrvJ7-ZhQ",
+  "authDomain": "anagu-land-registry.firebaseapp.com",
+  "firestoreDatabaseId": "ai-studio-anagu-a03f2da9-5336-4618-b45d-59b372051ff4",
+  "storageBucket": "anagu-land-registry.firebasestorage.app",
+  "messagingSenderId": "291028903",
   "measurementId": "",
-  "oAuthClientId": "261089723476-ck9627tphabajur68in3b5kphqm6mdrv.apps.googleusercontent.com",
+  "oAuthClientId": "291028903-92hbb0d1ov03ljsobk84bfu1vcc5v8dk.apps.googleusercontent.com",
   "recaptchaSiteKey": ""
 }

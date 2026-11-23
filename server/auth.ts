@@ -285,16 +285,31 @@ export function getConfiguredAllowedOrigins(): string[] {
     .filter((item) => item.length > 0 && item !== '*');
 }
 
-export function isOriginAllowed(origin: string, reqHost?: string): boolean {
+export function isOriginAllowed(
+  origin: string,
+  reqHost?: string,
+  forwardedHost?: string | string[]
+): boolean {
   const normalized = origin.trim().replace(/\/+$/, '');
   if (!normalized || normalized === 'null') return false;
 
-  // Same-origin requests (Origin host matches request Host header)
+  const candidateHosts: string[] = [];
   if (reqHost) {
-    const lowerHost = reqHost.trim().toLowerCase();
+    candidateHosts.push(reqHost.trim().toLowerCase());
+  }
+  const rawForwarded = Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost;
+  if (typeof rawForwarded === 'string' && rawForwarded.trim()) {
+    const firstHost = rawForwarded.split(',')[0].trim().toLowerCase();
+    if (firstHost && /^[a-z0-9.-]+(:\d+)?$/i.test(firstHost)) {
+      candidateHosts.push(firstHost);
+    }
+  }
+
+  // Same-origin requests (Origin host matches request Host or X-Forwarded-Host header)
+  for (const host of candidateHosts) {
     if (
-      normalized.toLowerCase() === `https://${lowerHost}` ||
-      normalized.toLowerCase() === `http://${lowerHost}`
+      normalized.toLowerCase() === `https://${host}` ||
+      normalized.toLowerCase() === `http://${host}`
     ) {
       return true;
     }

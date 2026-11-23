@@ -40,7 +40,7 @@ service cloud.firestore {
     }
 
     function isBootstrappedAdmin() {
-      return isVerifiedUser() && request.auth.token.email == 'theophilussamuel100@gmail.com';
+      return isVerifiedUser() && request.auth.token.email == 'ezekielsunday079@gmail.com';
     }
 
     function isAdmin() {

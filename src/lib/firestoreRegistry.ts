@@ -26,7 +26,7 @@ import type {
 } from '../types/anagu';
 import { auth, db, googleProvider, handleFirestoreError, OperationType } from './firebase';
 
-export const BOOTSTRAPPED_ADMIN_EMAIL = 'theophilussamuel100@gmail.com';
+export const BOOTSTRAPPED_ADMIN_EMAIL = 'ezekielsunday079@gmail.com';
 const ETH_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
 const ALLOWED_INTENDED_USES: ReadonlySet<ParcelRecord['intendedUse']> = new Set([
   'Residential',
@@ -259,8 +259,23 @@ function buildParcelFirestorePayload(
 }
 
 export async function signInWithGooglePopup(): Promise<FirebaseUser> {
-  const cred = await signInWithPopup(auth, googleProvider);
-  return cred.user;
+  try {
+    const cred = await signInWithPopup(auth, googleProvider);
+    return cred.user;
+  } catch (err) {
+    const code = (err as { code?: string })?.code || '';
+    const message = err instanceof Error ? err.message : String(err);
+    if (code === 'auth/unauthorized-domain' || message.includes('auth/unauthorized-domain')) {
+      const host = typeof window !== 'undefined' && window.location?.hostname ? window.location.hostname : 'this domain';
+      throw new Error(
+        `Google Sign-In is blocked because "${host}" is not yet listed in Firebase Authorized Domains. Add "${host}" under Firebase Console → Authentication → Settings → Authorized domains, or sign in with Email & Password below.`
+      );
+    }
+    if (code === 'auth/popup-blocked' || message.includes('auth/popup-blocked')) {
+      throw new Error('Your browser blocked the Google Sign-In popup. Please allow popups for this site and try again.');
+    }
+    throw err;
+  }
 }
 
 export async function signOutFirebaseUser(): Promise<void> {

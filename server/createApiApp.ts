@@ -149,7 +149,7 @@ export function attachApiRoutes(app: express.Express): void {
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');
 
     if (origin) {
-      if (!isOriginAllowed(origin, req.headers.host)) {
+      if (!isOriginAllowed(origin, req.headers.host, req.headers['x-forwarded-host'])) {
         return res.status(403).json({ error: 'Origin not allowed by CORS policy.' });
       }
       res.setHeader('Access-Control-Allow-Origin', origin);
