@@ -24,7 +24,28 @@ import type {
   ParcelRecord,
   RevocationGround
 } from '../types/anagu';
-import { auth, db, googleProvider, handleFirestoreError, OperationType } from './firebase';
+import {
+  auth,
+  db,
+  FIREBASE_PROJECT_ID,
+  googleProvider,
+  handleFirestoreError,
+  OperationType
+} from './firebase';
+
+export class UnauthorizedAuthDomainError extends Error {
+  public readonly hostname: string;
+  public readonly projectId: string;
+
+  constructor(hostname: string, projectId: string) {
+    super(
+      `Google Sign-In is blocked because "${hostname}" is not yet listed in Firebase Authorized Domains for project "${projectId}". Add "${hostname}" under Firebase Console → Authentication → Settings → Authorized domains, or sign in with Email & Password below.`
+    );
+    this.name = 'UnauthorizedAuthDomainError';
+    this.hostname = hostname;
+    this.projectId = projectId;
+  }
+}
 
 export const BOOTSTRAPPED_ADMIN_EMAIL = 'ezekielsunday079@gmail.com';
 const ETH_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
@@ -266,10 +287,11 @@ export async function signInWithGooglePopup(): Promise<FirebaseUser> {
     const code = (err as { code?: string })?.code || '';
     const message = err instanceof Error ? err.message : String(err);
     if (code === 'auth/unauthorized-domain' || message.includes('auth/unauthorized-domain')) {
-      const host = typeof window !== 'undefined' && window.location?.hostname ? window.location.hostname : 'this domain';
-      throw new Error(
-        `Google Sign-In is blocked because "${host}" is not yet listed in Firebase Authorized Domains. Add "${host}" under Firebase Console → Authentication → Settings → Authorized domains, or sign in with Email & Password below.`
-      );
+      const host =
+        typeof window !== 'undefined' && window.location?.hostname
+          ? window.location.hostname
+          : 'this domain';
+      throw new UnauthorizedAuthDomainError(host, FIREBASE_PROJECT_ID);
     }
     if (code === 'auth/popup-blocked' || message.includes('auth/popup-blocked')) {
       throw new Error('Your browser blocked the Google Sign-In popup. Please allow popups for this site and try again.');

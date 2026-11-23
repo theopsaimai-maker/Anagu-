@@ -18,7 +18,12 @@ import { AccessRoleId, AuthMode, AuthUser } from '../../types/anagu';
 import { ASSET_IMAGES } from '../../data/mockData';
 import { NIGERIA_STATES_AND_LGAS } from '../../data/nigeriaLocations';
 import { apiDemoLogin, apiLogin, apiSignup, isBackendUnavailableError } from '../../lib/api';
-import { saveUserProfileToFirestore, signInWithGooglePopup } from '../../lib/firestoreRegistry';
+import {
+  saveUserProfileToFirestore,
+  signInWithGooglePopup,
+  UnauthorizedAuthDomainError
+} from '../../lib/firestoreRegistry';
+import { FirebaseDomainHelpBanner } from '../FirebaseDomainHelpBanner';
 
 interface Props {
   initialMode: AuthMode;
@@ -126,6 +131,10 @@ export const ScreenAuth: React.FC<Props> = ({
 
   const [imageBroken, setImageBroken] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [unauthorizedDomainInfo, setUnauthorizedDomainInfo] = useState<{
+    hostname: string;
+    projectId: string;
+  } | null>(null);
 
   const roleInfo = ROLE_META[selectedRole];
   const RoleIcon = roleInfo.icon;
@@ -133,6 +142,7 @@ export const ScreenAuth: React.FC<Props> = ({
   const handleSwitchMode = (nextMode: AuthMode) => {
     setMode(nextMode);
     setErrorMsg('');
+    setUnauthorizedDomainInfo(null);
     setShowForgotHelp(false);
   };
 
@@ -238,6 +248,7 @@ export const ScreenAuth: React.FC<Props> = ({
 
   const handleGoogleSignIn = async () => {
     setErrorMsg('');
+    setUnauthorizedDomainInfo(null);
     setIsSubmitting(true);
     try {
       const fbUser = await signInWithGooglePopup();
@@ -246,11 +257,15 @@ export const ScreenAuth: React.FC<Props> = ({
       });
       onAuthSuccess(cloudUser);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Google Sign-In was cancelled or failed.';
-      if (msg.toLowerCase().includes('popup-closed-by-user')) {
-        setErrorMsg('Google Sign-In popup was closed before completing.');
+      if (err instanceof UnauthorizedAuthDomainError) {
+        setUnauthorizedDomainInfo({ hostname: err.hostname, projectId: err.projectId });
       } else {
-        setErrorMsg(msg);
+        const msg = err instanceof Error ? err.message : 'Google Sign-In was cancelled or failed.';
+        if (msg.toLowerCase().includes('popup-closed-by-user')) {
+          setErrorMsg('Google Sign-In popup was closed before completing.');
+        } else {
+          setErrorMsg(msg);
+        }
       }
     } finally {
       setIsSubmitting(false);
@@ -491,6 +506,14 @@ export const ScreenAuth: React.FC<Props> = ({
                 <div className="flex-grow border-t border-slate-800" />
               </div>
             </div>
+
+            {/* Unauthorized Firebase Domain Guidance */}
+            {unauthorizedDomainInfo && (
+              <FirebaseDomainHelpBanner
+                hostname={unauthorizedDomainInfo.hostname}
+                projectId={unauthorizedDomainInfo.projectId}
+              />
+            )}
 
             {/* Validation Error Feedback */}
             {errorMsg && (

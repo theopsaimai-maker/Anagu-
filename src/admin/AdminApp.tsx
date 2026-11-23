@@ -66,6 +66,7 @@ import {
   apiAdminVerifyParcel
 } from '../lib/adminApi';
 import { auth } from '../lib/firebase';
+import { FirebaseDomainHelpBanner } from '../components/FirebaseDomainHelpBanner';
 import {
   addAuthorizedAdminEmail,
   adminDeleteInquiryInFirestore,
@@ -87,7 +88,8 @@ import {
   signOutFirebaseUser,
   subscribeFirestoreMqttEvents,
   subscribeFirestoreParcels,
-  syncParcelsToFirestore
+  syncParcelsToFirestore,
+  UnauthorizedAuthDomainError
 } from '../lib/firestoreRegistry';
 
 type AdminTab = 'overview' | 'lands' | 'purchases' | 'users' | 'audit';
@@ -173,6 +175,10 @@ export const AdminApp: React.FC = () => {
   const [signupConfirm, setSignupConfirm] = useState('');
   const [signupInviteCode, setSignupInviteCode] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
+  const [unauthorizedDomainInfo, setUnauthorizedDomainInfo] = useState<{
+    hostname: string;
+    projectId: string;
+  } | null>(null);
   const [isAuthBusy, setIsAuthBusy] = useState(false);
 
   // Dashboard data
@@ -508,6 +514,7 @@ export const AdminApp: React.FC = () => {
 
   const handleGoogleAdminLogin = async () => {
     setAuthError(null);
+    setUnauthorizedDomainInfo(null);
     setFeedbackBanner(null);
     setIsAuthBusy(true);
     try {
@@ -529,8 +536,12 @@ export const AdminApp: React.FC = () => {
       }
       setAdminUser(profile);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Google Admin sign-in failed.';
-      setAuthError(msg);
+      if (err instanceof UnauthorizedAuthDomainError) {
+        setUnauthorizedDomainInfo({ hostname: err.hostname, projectId: err.projectId });
+      } else {
+        const msg = err instanceof Error ? err.message : 'Google Admin sign-in failed.';
+        setAuthError(msg);
+      }
     } finally {
       setIsAuthBusy(false);
     }
@@ -539,6 +550,7 @@ export const AdminApp: React.FC = () => {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
+    setUnauthorizedDomainInfo(null);
     setIsAuthBusy(true);
     try {
       const res = await apiAdminLogin(loginEmail, loginPassword);
@@ -1010,6 +1022,7 @@ export const AdminApp: React.FC = () => {
                   onClick={() => {
                     setAuthMode('login');
                     setAuthError(null);
+                    setUnauthorizedDomainInfo(null);
                   }}
                   className={`px-3.5 py-2 rounded-lg text-xs font-semibold transition-colors ${
                     authMode === 'login'
@@ -1024,6 +1037,7 @@ export const AdminApp: React.FC = () => {
                   onClick={() => {
                     setAuthMode('signup');
                     setAuthError(null);
+                    setUnauthorizedDomainInfo(null);
                   }}
                   className={`px-3.5 py-2 rounded-lg text-xs font-semibold transition-colors ${
                     authMode === 'signup'
@@ -1076,6 +1090,13 @@ export const AdminApp: React.FC = () => {
                 <div className="flex-grow border-t border-slate-800" />
               </div>
             </div>
+
+            {unauthorizedDomainInfo && (
+              <FirebaseDomainHelpBanner
+                hostname={unauthorizedDomainInfo.hostname}
+                projectId={unauthorizedDomainInfo.projectId}
+              />
+            )}
 
             {authError && (
               <div className="p-3 rounded-xl bg-red-950/60 border border-red-800/80 text-red-200 text-xs flex items-start gap-2">
