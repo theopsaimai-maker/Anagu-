@@ -12,7 +12,9 @@ import {
   Map as MapIcon,
   RefreshCw,
   Camera,
-  Wallet
+  Wallet,
+  Coins,
+  ExternalLink
 } from 'lucide-react';
 import { ParcelRecord, BeaconPoint, AuthUser } from '../../types/anagu';
 import {
@@ -30,12 +32,25 @@ import {
   searchNigerianLandmarks
 } from '../../lib/osm';
 import {
+  ConnectedWalletResult,
   cleanInvisibleChars,
   connectWeb3Wallet,
   discoverWalletsOnce,
   formatWalletError,
+  truncateAddress,
   validateSellerWallet
 } from '../../lib/web3Wallet';
+import {
+  getContractConfig,
+  getPolygonAmoyAddressUrl,
+  getPolygonAmoyTxUrl
+} from '../../config/contracts';
+import {
+  AnaguTokenStatus,
+  claimTestnetAnaguTokens,
+  payRegistrationFeeOnChain,
+  readAnaguTokenStatus
+} from '../../lib/anaguContracts';
 import { OpenStreetMapWidget } from '../maps/OpenStreetMapWidget';
 import { LandRegistrySnapshot } from '../maps/LandRegistrySnapshot';
 import { describeParcelGeography } from '../../lib/geoDescription';
@@ -131,8 +146,14 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
   const [applicantName, setApplicantName] = useState(currentUser?.fullName || '');
   const [applicantNin, setApplicantNin] = useState(currentUser?.credentialId || '');
   const [sellerWallet, setSellerWallet] = useState('');
+  const [connectedWallet, setConnectedWallet] = useState<ConnectedWalletResult | null>(null);
   const [isConnectingSellerWallet, setIsConnectingSellerWallet] = useState(false);
   const [sellerWalletNote, setSellerWalletNote] = useState<string | null>(null);
+  const [tokenStatus, setTokenStatus] = useState<AnaguTokenStatus | null>(null);
+  const [isClaimingFaucet, setIsClaimingFaucet] = useState(false);
+  const [feeTxHash, setFeeTxHash] = useState<string | null>(null);
+  const [feeStatusNote, setFeeStatusNote] = useState<string | null>(null);
+  const contractConfig = useMemo(() => getContractConfig(), []);
   const [state, setState] = useState(initialState);
   const [lga, setLga] = useState(
     initialLgas.includes('Abuja Municipal (AMAC)') ? 'Abuja Municipal (AMAC)' : initialLgas[0]
@@ -363,25 +384,64 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
     setCalculatedHash('');
   };
 
+  const refreshAnaguTokenStatus = async (walletAddr?: string, provider?: ConnectedWalletResult['provider']) => {
+    try {
+      const status = await readAnaguTokenStatus(walletAddr, undefined, provider);
+      setTokenStatus(status);
+    } catch {
+      // Ignore RPC read failure when offline
+    }
+  };
+
+  useEffect(() => {
+    void refreshAnaguTokenStatus(sellerWallet || undefined, connectedWallet?.provider);
+  }, [sellerWallet, connectedWallet?.provider]);
+
   const handleConnectSellerWallet = async () => {
     setSellerWalletNote(null);
+    setFeeStatusNote(null);
     setFormError(null);
     setIsConnectingSellerWallet(true);
     try {
       const wallets = await discoverWalletsOnce(180);
       if (wallets.length === 0) {
         setSellerWalletNote(
-          'No browser wallet extension detected — paste any valid 0x... wallet address above.'
+          'No browser wallet extension detected — paste any valid Polygon (0x...) wallet address above.'
         );
         return;
       }
-      const connected = await connectWeb3Wallet(wallets[0]);
+      const connected = await connectWeb3Wallet(wallets[0], {
+        enforcePolygon: true,
+        targetNetwork: 'amoy'
+      });
+      setConnectedWallet(connected);
       setSellerWallet(connected.address);
-      setSellerWalletNote(`Connected ${connected.walletName} (${connected.address})`);
+      setSellerWalletNote(
+        `Connected ${connected.walletName} on ${connected.chainName} (${connected.address})`
+      );
+      await refreshAnaguTokenStatus(connected.address, connected.provider);
     } catch (err) {
       setSellerWalletNote(formatWalletError(err));
     } finally {
       setIsConnectingSellerWallet(false);
+    }
+  };
+
+  const handleClaimTestnetAnagu = async () => {
+    if (!connectedWallet) {
+      setFeeStatusNote('Connect your Polygon Amoy wallet first to claim 1,000 testnet ANAGU.');
+      return;
+    }
+    setIsClaimingFaucet(true);
+    setFeeStatusNote(null);
+    try {
+      const { txHash, amountFormatted } = await claimTestnetAnaguTokens(connectedWallet.provider);
+      setFeeStatusNote(`Claimed ${amountFormatted} testnet ANAGU (Tx ${txHash.slice(0, 12)}...).`);
+      await refreshAnaguTokenStatus(connectedWallet.address, connectedWallet.provider);
+    } catch (err) {
+      setFeeStatusNote(err instanceof Error ? err.message : 'Testnet faucet claim failed.');
+    } finally {
+      setIsClaimingFaucet(false);
     }
   };
 
@@ -460,6 +520,33 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
 
     const uniqueSuffix = Date.now().toString(36).toUpperCase().slice(-4);
     const newId = `PAR-2026-${Math.floor(1000 + Math.random() * 9000)}-${uniqueSuffix}`;
+
+    // Step 1 Statutory Due Process: settle ANAGU filing fee on Polygon Amoy if AnaguToken is deployed & wallet connected
+    let recordedFeeTxHash: string | undefined = feeTxHash || undefined;
+    const activeContracts = getContractConfig();
+    if (activeContracts.anaguTokenAddress && connectedWallet && !recordedFeeTxHash) {
+      try {
+        setFeeStatusNote(
+          `Confirming ${tokenStatus?.registrationFeeFormatted || activeContracts.registrationFeeAnagu} ANAGU statutory filing fee on Polygon Amoy...`
+        );
+        const feePayment = await payRegistrationFeeOnChain(connectedWallet.provider, newId);
+        recordedFeeTxHash = feePayment.txHash;
+        setFeeTxHash(feePayment.txHash);
+        setFeeStatusNote(
+          `Paid ${feePayment.feeFormatted} ANAGU statutory registration fee on Polygon Amoy.`
+        );
+        void refreshAnaguTokenStatus(connectedWallet.address, connectedWallet.provider);
+      } catch (err) {
+        setIsSubmitting(false);
+        setFormError(
+          err instanceof Error
+            ? `Polygon Amoy ANAGU filing fee failed: ${err.message}`
+            : 'Polygon Amoy ANAGU filing fee transaction was not completed.'
+        );
+        return;
+      }
+    }
+
     const newParcel: ParcelRecord = {
       id: newId,
       cadastralRef: `${statePrefix}/${cleanLga.slice(0, 4).toUpperCase().replace(/[^A-Z]/g, 'X')}/2026-${Math.floor(
@@ -477,6 +564,7 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
       sellerWallet: walletCheck.normalized,
       mapSnapshotUrl: mapSnapshotUrl || undefined,
       status: 'draft',
+      txHash: recordedFeeTxHash,
       spatialHash:
         '0x' + Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join(''),
       documentHash:
@@ -656,6 +744,20 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
                   {uploadedFileName} · Hash: {submittedParcel.documentHash.slice(0, 22)}...
                 </span>
               </div>
+              {submittedParcel.txHash && (
+                <div className="sm:col-span-2">
+                  <span className="text-slate-500 block">Polygon Amoy ANAGU Filing Fee Tx</span>
+                  <a
+                    href={getPolygonAmoyTxUrl(submittedParcel.txHash)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 font-mono text-emerald-400 hover:text-emerald-300 mt-0.5 break-all"
+                  >
+                    <span>{submittedParcel.txHash}</span>
+                    <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+                  </a>
+                </div>
+              )}
             </div>
 
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
@@ -783,7 +885,13 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
                       className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-60 border border-slate-700 text-emerald-300 text-xs font-semibold rounded-xl transition-colors inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0"
                     >
                       <Wallet className="w-3.5 h-3.5" />
-                      <span>{isConnectingSellerWallet ? 'Connecting...' : 'Use My Wallet'}</span>
+                      <span>
+                        {isConnectingSellerWallet
+                          ? 'Connecting Polygon Amoy...'
+                          : connectedWallet
+                          ? `Polygon Amoy (${truncateAddress(connectedWallet.address)})`
+                          : 'Connect Polygon Amoy Wallet'}
+                      </span>
                     </button>
                   </div>
                   <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
@@ -802,9 +910,9 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
                         ? sellerWalletNote
                         : sellerWallet.trim().length > 0
                         ? walletCheck.valid
-                          ? `${walletCheck.label} · Ready for buyer checkout`
+                          ? `${walletCheck.label} · Ready for Polygon Amoy ANAGU settlement`
                           : walletCheck.reason || walletCheck.label
-                        : 'Buyers on Access Lands will pay directly into this Web3 wallet address.'}
+                        : 'Connects on Polygon Amoy Testnet (Chain ID 80002) for ANAGU token filing fee settlement & LandTitleNFT issuance.'}
                     </p>
                     {sellerWallet.trim().length > 0 && (
                       <span
@@ -816,6 +924,76 @@ export const ScreenCitizenPortal: React.FC<Props> = ({
                       >
                         {walletCheck.valid ? 'Verified Format' : walletCheck.label}
                       </span>
+                    )}
+                  </div>
+
+                  {/* Statutory Due-Process & Polygon Amoy Smart Contract Status */}
+                  <div className="mt-3 rounded-xl bg-slate-950 border border-slate-800 p-3.5 space-y-2.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-300">
+                        <Coins className="w-3.5 h-3.5 shrink-0" />
+                        <span>Polygon Amoy Due Process · AnaguToken &amp; LandTitleNFT</span>
+                      </div>
+                      <span className="font-mono text-[10px] text-slate-400">
+                        Chain ID 80002 · Statutory Fee: {tokenStatus?.registrationFeeFormatted || contractConfig.registrationFeeAnagu} ANAGU
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 text-[10px]">
+                      <div className="px-2.5 py-1.5 rounded-lg bg-emerald-950/40 border border-emerald-500/30 text-emerald-300 font-semibold">
+                        1. Citizen &amp; ANAGU Fee
+                      </div>
+                      <div className="px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-400">
+                        2. Surveyor GIS Check
+                      </div>
+                      <div className="px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-400">
+                        3. Community Oracle
+                      </div>
+                      <div className="px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-400">
+                        4. Registrar NFT Mint
+                      </div>
+                    </div>
+
+                    {contractConfig.anaguTokenAddress ? (
+                      <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-[11px]">
+                        <div className="space-y-0.5 min-w-0">
+                          <div className="text-slate-300">
+                            ANAGU Balance:{' '}
+                            <strong className="font-mono text-emerald-400">
+                              {tokenStatus?.balanceFormatted ?? '0'} ANAGU
+                            </strong>
+                          </div>
+                          <a
+                            href={getPolygonAmoyAddressUrl(contractConfig.anaguTokenAddress)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 font-mono text-[10px] text-slate-400 hover:text-emerald-300"
+                          >
+                            <span>AnaguToken: {truncateAddress(contractConfig.anaguTokenAddress)}</span>
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        </div>
+                        {connectedWallet && tokenStatus?.testnetFaucetEnabled !== false && (
+                          <button
+                            type="button"
+                            disabled={isClaimingFaucet}
+                            onClick={() => void handleClaimTestnetAnagu()}
+                            className="px-3 py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-300 text-[11px] font-semibold transition-colors disabled:opacity-50"
+                          >
+                            {isClaimingFaucet ? 'Claiming...' : 'Claim 1,000 Testnet ANAGU'}
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-[11px] text-amber-300/90 leading-relaxed">
+                        Smart contracts are ready in <code className="font-mono text-amber-200">contracts/</code>. Deploy to Polygon Amoy Testnet and add the addresses in <code className="font-mono text-amber-200">VITE_ANAGU_TOKEN_ADDRESS</code> or Admin Portal to trigger live on-chain ANAGU fee settlement.
+                      </div>
+                    )}
+
+                    {feeStatusNote && (
+                      <div className="text-[11px] text-emerald-300 font-medium pt-0.5">
+                        {feeStatusNote}
+                      </div>
                     )}
                   </div>
                 </div>

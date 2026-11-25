@@ -17,6 +17,12 @@ const BESU_GAS_PRICE =
     ? Number(process.env.BESU_GAS_PRICE)
     : 0;
 
+// Optional Polygon Amoy Testnet (Chain ID 80002) configuration loaded exclusively from env vars.
+const POLYGON_AMOY_RPC_URL =
+  process.env.POLYGON_AMOY_RPC_URL || "https://rpc-amoy.polygon.technology";
+const POLYGON_AMOY_DEPLOYER_KEY =
+  process.env.POLYGON_AMOY_DEPLOYER_PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY || "";
+
 const config: HardhatUserConfig = {
   solidity: {
     version: "0.8.24",
@@ -37,6 +43,11 @@ const config: HardhatUserConfig = {
   networks: {
     hardhat: {
       chainId: 13371,
+    },
+    polygonAmoy: {
+      url: POLYGON_AMOY_RPC_URL,
+      chainId: 80002,
+      accounts: POLYGON_AMOY_DEPLOYER_KEY ? [POLYGON_AMOY_DEPLOYER_KEY] : [],
     },
     ...(BESU_RPC_URL
       ? {

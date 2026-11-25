@@ -22,7 +22,8 @@ import {
   Loader2,
   Maximize2,
   Clock,
-  Compass
+  Compass,
+  Coins
 } from 'lucide-react';
 import { AuthUser, ParcelRecord, VerifiedLandListing } from '../../types/anagu';
 import { VERIFIED_LANDS_FOR_SALE, getDefaultPolygonForState } from '../../data/verifiedLands';
@@ -31,9 +32,10 @@ import { apiCreateInquiry } from '../../lib/api';
 import { describeParcelGeography } from '../../lib/geoDescription';
 import { LandRegistrySnapshot } from '../maps/LandRegistrySnapshot';
 import {
+  ANAGU_USD_REFERENCE_RATE,
   ConnectedWalletResult,
   DiscoveredWallet,
-  ETH_USD_REFERENCE_RATE,
+  POL_USD_REFERENCE_RATE,
   connectWeb3Wallet,
   discoverWalletsOnce,
   formatWalletError,
@@ -45,8 +47,20 @@ import {
   signLandPurchaseIntent,
   subscribeEip6963Wallets,
   truncateAddress,
-  usdToEthString
+  usdToAnaguString,
+  usdToPolString
 } from '../../lib/web3Wallet';
+import {
+  getContractConfig,
+  getPolygonAmoyAddressUrl,
+  getPolygonAmoyTxUrl
+} from '../../config/contracts';
+import {
+  AnaguTokenStatus,
+  claimTestnetAnaguTokens,
+  openLandPurchaseEscrowOnChain,
+  readAnaguTokenStatus
+} from '../../lib/anaguContracts';
 
 interface Props {
   parcels: ParcelRecord[];
@@ -109,10 +123,15 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
   const [copiedDappUrl, setCopiedDappUrl] = useState(false);
   const [copiedSellerWallet, setCopiedSellerWallet] = useState(false);
   const [paymentMode, setPaymentMode] = useState<'full' | 'deposit'>('full');
+  const [settlementAsset, setSettlementAsset] = useState<'ANAGU' | 'POL'>('ANAGU');
   const [paymentEthAmount, setPaymentEthAmount] = useState<string>('');
   const [isSendingPayment, setIsSendingPayment] = useState(false);
   const [paymentTxHash, setPaymentTxHash] = useState<string | null>(null);
+  const [escrowId, setEscrowId] = useState<string | null>(null);
+  const [buyerTokenStatus, setBuyerTokenStatus] = useState<AnaguTokenStatus | null>(null);
+  const [isClaimingTestAnagu, setIsClaimingTestAnagu] = useState(false);
 
+  const contractConfig = useMemo(() => getContractConfig(), []);
   const mobileLinks = useMemo(() => getMobileWalletDeepLinks(), []);
   const isMobile = useMemo(() => isMobileDevice(), []);
 
@@ -253,9 +272,15 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
         return;
       }
 
-      const connected = await connectWeb3Wallet(chosen);
+      const connected = await connectWeb3Wallet(chosen, {
+        enforcePolygon: true,
+        targetNetwork: 'amoy'
+      });
       setConnectedWallet(connected);
       setWalletStatus('connected');
+      void readAnaguTokenStatus(connected.address, buyListing?.id, connected.provider)
+        .then(setBuyerTokenStatus)
+        .catch(() => undefined);
     } catch (err) {
       setWalletStatus('error');
       setWalletError(formatWalletError(err));
@@ -266,34 +291,73 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
     if (listing.approvalStatus === 'waiting_admin_approval') {
       return;
     }
+    const cfg = getContractConfig();
+    const defaultAsset: 'ANAGU' | 'POL' = cfg.anaguTokenAddress ? 'ANAGU' : 'POL';
     setBuyListing(listing);
     setBuyerName(currentUser?.fullName || '');
     setBuyerPhone(currentUser?.phone || '');
     setBuyerEmail(currentUser?.email || '');
     setOfferNotes(
-      `Purchase reservation for verified parcel ${listing.cadastralRef} (${formatUsd(listing.priceUsd)} USD).`
+      `Purchase reservation for verified parcel ${listing.cadastralRef} (${formatUsd(listing.priceUsd)} USD) pending Registrar statutory title transfer.`
     );
     setSubmitError(null);
     setSubmittedRef(null);
     setWalletError(null);
     setWalletSignature(null);
     setPaymentTxHash(null);
+    setEscrowId(null);
     setIsSendingPayment(false);
     setPaymentMode('full');
-    setPaymentEthAmount(usdToEthString(listing.priceUsd));
+    setSettlementAsset(defaultAsset);
+    setPaymentEthAmount(
+      defaultAsset === 'ANAGU' ? usdToAnaguString(listing.priceUsd) : usdToPolString(listing.priceUsd)
+    );
 
     if (connectedWallet) {
       setWalletStatus('connected');
+      void readAnaguTokenStatus(connectedWallet.address, listing.id, connectedWallet.provider)
+        .then(setBuyerTokenStatus)
+        .catch(() => undefined);
     } else {
       setWalletStatus('idle');
     }
+  };
+
+  const handleSelectSettlementAsset = (asset: 'ANAGU' | 'POL') => {
+    if (!buyListing) return;
+    setSettlementAsset(asset);
+    const usdTarget = paymentMode === 'full' ? buyListing.priceUsd : buyListing.priceUsd * 0.1;
+    setPaymentEthAmount(
+      asset === 'ANAGU' ? usdToAnaguString(usdTarget) : usdToPolString(usdTarget)
+    );
   };
 
   const handleSelectPaymentMode = (mode: 'full' | 'deposit') => {
     if (!buyListing) return;
     setPaymentMode(mode);
     const usdTarget = mode === 'full' ? buyListing.priceUsd : buyListing.priceUsd * 0.1;
-    setPaymentEthAmount(usdToEthString(usdTarget));
+    setPaymentEthAmount(
+      settlementAsset === 'ANAGU' ? usdToAnaguString(usdTarget) : usdToPolString(usdTarget)
+    );
+  };
+
+  const handleClaimBuyerTestnetAnagu = async () => {
+    if (!connectedWallet) return;
+    setWalletError(null);
+    setIsClaimingTestAnagu(true);
+    try {
+      await claimTestnetAnaguTokens(connectedWallet.provider);
+      const updated = await readAnaguTokenStatus(
+        connectedWallet.address,
+        buyListing?.id,
+        connectedWallet.provider
+      );
+      setBuyerTokenStatus(updated);
+    } catch (err) {
+      setWalletError(err instanceof Error ? err.message : 'Unable to claim testnet ANAGU.');
+    } finally {
+      setIsClaimingTestAnagu(false);
+    }
   };
 
   const handleCopySellerWallet = async (walletAddr?: string) => {
@@ -310,20 +374,35 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
   const handlePaySellerWallet = async () => {
     if (!buyListing || !connectedWallet) return;
     if (!buyListing.sellerWallet || !isValidEvmAddress(buyListing.sellerWallet)) {
-      setWalletError('This listing does not have a valid seller EVM wallet address.');
+      setWalletError('This listing does not have a valid seller Polygon (0x...) wallet address.');
       return;
     }
 
     setWalletError(null);
     setIsSendingPayment(true);
     try {
-      const { txHash } = await sendPaymentToSellerWallet({
-        provider: connectedWallet.provider,
-        fromAccount: connectedWallet.address,
-        toSellerWallet: buyListing.sellerWallet,
-        ethAmount: paymentEthAmount
-      });
-      setPaymentTxHash(txHash);
+      if (settlementAsset === 'ANAGU') {
+        const res = await openLandPurchaseEscrowOnChain({
+          provider: connectedWallet.provider,
+          parcelId: buyListing.id,
+          sellerWallet: buyListing.sellerWallet,
+          anaguAmount: paymentEthAmount
+        });
+        setPaymentTxHash(res.txHash);
+        setEscrowId(res.escrowId);
+        void readAnaguTokenStatus(connectedWallet.address, buyListing.id, connectedWallet.provider)
+          .then(setBuyerTokenStatus)
+          .catch(() => undefined);
+      } else {
+        const { txHash } = await sendPaymentToSellerWallet({
+          provider: connectedWallet.provider,
+          fromAccount: connectedWallet.address,
+          toSellerWallet: buyListing.sellerWallet,
+          ethAmount: paymentEthAmount,
+          targetNetwork: 'amoy'
+        });
+        setPaymentTxHash(txHash);
+      }
     } catch (err) {
       setWalletError(formatWalletError(err));
     } finally {
@@ -403,7 +482,9 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
         ? ` | Seller Wallet: ${buyListing.sellerWallet}`
         : '';
       const paymentProofInfo = paymentTxHash
-        ? ` | Direct Payment Tx (${paymentEthAmount} ETH): ${paymentTxHash}`
+        ? settlementAsset === 'ANAGU'
+          ? ` | ANAGU Statutory Escrow #${escrowId || 'Confirmed'} (${paymentEthAmount} ANAGU on Polygon Amoy): ${paymentTxHash}`
+          : ` | Direct Polygon Amoy Payment Tx (${paymentEthAmount} POL): ${paymentTxHash}`
         : '';
       const walletProofSummary = connectedWallet
         ? ` | Buyer Wallet (${connectedWallet.walletName} · ${connectedWallet.chainName}): ${connectedWallet.address}${
@@ -956,7 +1037,17 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                         )}
                         {paymentTxHash && (
                           <div className="truncate font-mono text-[10px] text-emerald-200">
-                            Payment Tx ({paymentEthAmount} ETH): {paymentTxHash}
+                            {settlementAsset === 'ANAGU'
+                              ? `ANAGU Escrow #${escrowId || 'Confirmed'} (${paymentEthAmount} ANAGU): `
+                              : `Polygon Amoy Payment (${paymentEthAmount} POL): `}
+                            <a
+                              href={getPolygonAmoyTxUrl(paymentTxHash)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="underline hover:text-white"
+                            >
+                              {paymentTxHash}
+                            </a>
                           </div>
                         )}
                         {walletSignature && (
@@ -1096,9 +1187,54 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                       </div>
 
                       {connectedWallet && isValidEvmAddress(buyListing.sellerWallet) && (
-                        <div className="pt-2 border-t border-slate-800 space-y-2">
-                          <div className="flex items-center justify-between gap-2 text-[10px] text-slate-400">
-                            <span>Pay directly in ETH (Ref: 1 ETH ≈ ${ETH_USD_REFERENCE_RATE.toLocaleString('en-US')})</span>
+                        <div className="pt-2 border-t border-slate-800 space-y-2.5">
+                          {/* Statutory Due-Process Escrow Notice */}
+                          <div className="text-[10px] text-slate-300 bg-slate-950/90 border border-slate-800 rounded-lg px-2.5 py-2 leading-relaxed">
+                            <span className="font-semibold text-emerald-300">Statutory Due Process:</span>{' '}
+                            LandTitleNFT #{buyListing.tokenId} blocks direct P2P transfers under the Land Use Act. Locking{' '}
+                            <strong className="text-white">ANAGU</strong> in smart-contract escrow protects your funds until the Ministry Registrar executes{' '}
+                            <code className="font-mono text-emerald-300">registryTransfer()</code>.
+                            {contractConfig.landTitleNftAddress && (
+                              <a
+                                href={getPolygonAmoyAddressUrl(contractConfig.landTitleNftAddress)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="ml-1.5 inline-flex items-center gap-0.5 font-mono text-emerald-400 hover:underline"
+                              >
+                                <span>NFT Contract</span>
+                                <ExternalLink className="w-2.5 h-2.5" />
+                              </a>
+                            )}
+                          </div>
+
+                          {/* Settlement Asset & Mode Selector */}
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-400">
+                            <div className="inline-flex rounded-md bg-slate-950 border border-slate-800 p-0.5">
+                              <button
+                                type="button"
+                                onClick={() => handleSelectSettlementAsset('ANAGU')}
+                                className={`px-2 py-0.5 rounded text-[10px] font-semibold inline-flex items-center gap-1 transition-colors ${
+                                  settlementAsset === 'ANAGU'
+                                    ? 'bg-emerald-600 text-white'
+                                    : 'text-slate-400 hover:text-white'
+                                }`}
+                              >
+                                <Coins className="w-3 h-3" />
+                                <span>ANAGU Escrow</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleSelectSettlementAsset('POL')}
+                                className={`px-2 py-0.5 rounded text-[10px] font-semibold transition-colors ${
+                                  settlementAsset === 'POL'
+                                    ? 'bg-emerald-600 text-white'
+                                    : 'text-slate-400 hover:text-white'
+                                }`}
+                              >
+                                Native POL
+                              </button>
+                            </div>
+
                             <div className="inline-flex rounded-md bg-slate-950 border border-slate-800 p-0.5">
                               <button
                                 type="button"
@@ -1125,6 +1261,43 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                             </div>
                           </div>
 
+                          {settlementAsset === 'ANAGU' && (
+                            <div className="flex flex-wrap items-center justify-between gap-2 text-[10px]">
+                              <span className="text-slate-400">
+                                {contractConfig.anaguTokenAddress ? (
+                                  <>
+                                    Balance:{' '}
+                                    <strong className="font-mono text-emerald-300">
+                                      {buyerTokenStatus?.balanceFormatted ?? '0'} ANAGU
+                                    </strong>{' '}
+                                    (1 ANAGU ≈ ${ANAGU_USD_REFERENCE_RATE} USD)
+                                  </>
+                                ) : (
+                                  <span className="text-amber-300">
+                                    AnaguToken contract address not configured yet — configure it in Admin Portal or use Native POL.
+                                  </span>
+                                )}
+                              </span>
+                              {contractConfig.anaguTokenAddress &&
+                                buyerTokenStatus?.testnetFaucetEnabled !== false && (
+                                  <button
+                                    type="button"
+                                    disabled={isClaimingTestAnagu}
+                                    onClick={() => void handleClaimBuyerTestnetAnagu()}
+                                    className="px-2 py-0.5 rounded bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-300 font-semibold disabled:opacity-50"
+                                  >
+                                    {isClaimingTestAnagu ? 'Claiming...' : 'Claim 1,000 ANAGU'}
+                                  </button>
+                                )}
+                            </div>
+                          )}
+
+                          {settlementAsset === 'POL' && (
+                            <div className="text-[10px] text-slate-400">
+                              Polygon Amoy Native Settlement (Ref: 1 POL ≈ ${POL_USD_REFERENCE_RATE.toFixed(2)} USD)
+                            </div>
+                          )}
+
                           <div className="flex flex-col sm:flex-row sm:items-center gap-2">
                             <div className="relative flex-1">
                               <input
@@ -1136,42 +1309,60 @@ export const ScreenVerifiedLands: React.FC<Props> = ({
                                     setPaymentEthAmount(e.target.value);
                                   }
                                 }}
-                                aria-label="ETH amount to send to seller wallet"
-                                className="w-full px-2.5 py-2 sm:py-1.5 pr-11 bg-slate-950 border border-slate-700 focus:border-emerald-500 rounded-lg font-mono text-xs text-white outline-none"
+                                aria-label={`${settlementAsset} amount to pay for land`}
+                                className="w-full px-2.5 py-2 sm:py-1.5 pr-14 bg-slate-950 border border-slate-700 focus:border-emerald-500 rounded-lg font-mono text-xs text-white outline-none"
                               />
-                              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] font-bold text-slate-400 pointer-events-none">
-                                ETH
+                              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] font-bold text-emerald-400 pointer-events-none">
+                                {settlementAsset}
                               </span>
                             </div>
                             <button
                               type="button"
-                              disabled={isSendingPayment || Boolean(paymentTxHash)}
+                              disabled={
+                                isSendingPayment ||
+                                Boolean(paymentTxHash) ||
+                                (settlementAsset === 'ANAGU' && !contractConfig.anaguTokenAddress)
+                              }
                               onClick={() => void handlePaySellerWallet()}
                               className="w-full sm:w-auto px-3 py-2 sm:py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white text-xs font-bold whitespace-nowrap shrink-0 inline-flex items-center justify-center gap-1.5 transition-colors"
                             >
                               {isSendingPayment ? (
                                 <>
                                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                  <span>Sending...</span>
+                                  <span>{settlementAsset === 'ANAGU' ? 'Locking Escrow...' : 'Sending POL...'}</span>
                                 </>
                               ) : paymentTxHash ? (
                                 <>
                                   <CheckCircle2 className="w-3.5 h-3.5" />
-                                  <span>Paid</span>
+                                  <span>{settlementAsset === 'ANAGU' ? 'Escrow Funded' : 'Paid'}</span>
                                 </>
                               ) : (
                                 <>
                                   <Wallet className="w-3.5 h-3.5" />
-                                  <span>Pay Seller Wallet</span>
+                                  <span>
+                                    {settlementAsset === 'ANAGU'
+                                      ? 'Lock ANAGU Escrow'
+                                      : 'Pay POL on Polygon'}
+                                  </span>
                                 </>
                               )}
                             </button>
                           </div>
 
                           {paymentTxHash && (
-                            <div className="text-[10px] font-mono text-emerald-300 bg-emerald-950/40 border border-emerald-500/30 rounded-md px-2.5 py-1.5 truncate">
-                              Payment Sent · Tx: {paymentTxHash}
-                            </div>
+                            <a
+                              href={getPolygonAmoyTxUrl(paymentTxHash)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center justify-between gap-2 text-[10px] font-mono text-emerald-300 bg-emerald-950/40 border border-emerald-500/30 rounded-md px-2.5 py-1.5 hover:bg-emerald-950/70"
+                            >
+                              <span className="truncate">
+                                {settlementAsset === 'ANAGU'
+                                  ? `Escrow #${escrowId || 'Confirmed'} Locked · Tx: ${paymentTxHash}`
+                                  : `POL Sent · Tx: ${paymentTxHash}`}
+                              </span>
+                              <ExternalLink className="w-3 h-3 shrink-0" />
+                            </a>
                           )}
                         </div>
                       )}

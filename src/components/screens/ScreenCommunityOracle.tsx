@@ -11,10 +11,14 @@ import {
   History,
   Building,
   ArrowRight,
-  Upload
+  Upload,
+  Wallet
 } from 'lucide-react';
 import { ParcelRecord } from '../../types/anagu';
 import { ASSET_IMAGES } from '../../data/mockData';
+import { getContractConfig, getPolygonAmoyTxUrl } from '../../config/contracts';
+import { connectWeb3Wallet, discoverWalletsOnce, formatWalletError } from '../../lib/web3Wallet';
+import { recordOracleAttestationOnChain } from '../../lib/anaguContracts';
 
 interface OracleAttestationDetails {
   affidavitRef?: string;
@@ -58,6 +62,9 @@ export const ScreenCommunityOracle: React.FC<Props> = ({
   const [affidavitFile, setAffidavitFile] = useState<string>('Family_Council_Minutes_Signed.pdf');
   const [isAttesting, setIsAttesting] = useState<boolean>(false);
   const [attestedSuccess, setAttestedSuccess] = useState<boolean>(false);
+  const [oracleTxHash, setOracleTxHash] = useState<string | null>(null);
+  const [oracleChainNote, setOracleChainNote] = useState<string | null>(null);
+  const contractConfig = getContractConfig();
 
   const activeParcel = parcels.find(p => p.id === selectedParcelId) || parcels[0];
 
@@ -96,31 +103,57 @@ export const ScreenCommunityOracle: React.FC<Props> = ({
 
   const attestationScore = simulateInformantCollusion ? 34 : Math.max(30, Math.round((signedCount / 3) * 98));
 
-  const handleAttest = () => {
+  const handleAttest = async () => {
     if (!quorumMet) return;
     setIsAttesting(true);
-    setTimeout(() => {
-      setIsAttesting(false);
-      onApproveOracle(activeParcel.id, {
-        affidavitRef,
-        familyWitness,
-        witnessNotes,
-        reviewerId: 'ORACLE_COUNCIL_AMAC_04',
-        quorumPercent,
-        attestationScore
-      });
-      onEmitMqtt('land/verification/oracle', {
-        applicationId: activeParcel.id,
-        outcome: 'Verified',
-        attestationScore,
-        quorumPercent,
-        affidavitRef,
-        familyWitness,
-        reviewerId: 'ORACLE_COUNCIL_AMAC_04',
-        timestamp: new Date().toISOString()
-      });
-      setAttestedSuccess(true);
-    }, 500);
+    setOracleChainNote(null);
+
+    let chainTxHash: string | undefined;
+    if (contractConfig.landTitleNftAddress) {
+      try {
+        const wallets = await discoverWalletsOnce(150);
+        if (wallets.length > 0) {
+          const connected = await connectWeb3Wallet(wallets[0], {
+            enforcePolygon: true,
+            targetNetwork: 'amoy'
+          });
+          const onChain = await recordOracleAttestationOnChain({
+            provider: connected.provider,
+            parcelId: activeParcel.id,
+            attestationSummary: `${affidavitRef}|${familyWitness}|${quorumPercent}%|${attestationScore}`
+          });
+          chainTxHash = onChain.txHash;
+          setOracleTxHash(onChain.txHash);
+          setOracleChainNote(`Recorded on Polygon Amoy AnaguLandTitleNFT.`);
+        }
+      } catch (err) {
+        setOracleChainNote(
+          `Off-chain attestation recorded (Polygon Amoy tx skipped: ${formatWalletError(err)})`
+        );
+      }
+    }
+
+    onApproveOracle(activeParcel.id, {
+      affidavitRef,
+      familyWitness,
+      witnessNotes,
+      reviewerId: 'ORACLE_COUNCIL_AMAC_04',
+      quorumPercent,
+      attestationScore
+    });
+    onEmitMqtt('land/verification/oracle', {
+      applicationId: activeParcel.id,
+      outcome: 'Verified',
+      attestationScore,
+      quorumPercent,
+      affidavitRef,
+      familyWitness,
+      reviewerId: 'ORACLE_COUNCIL_AMAC_04',
+      txHash: chainTxHash,
+      timestamp: new Date().toISOString()
+    });
+    setIsAttesting(false);
+    setAttestedSuccess(true);
   };
 
   return (
@@ -421,9 +454,25 @@ export const ScreenCommunityOracle: React.FC<Props> = ({
           {/* Action Sign-off */}
           <div className="mt-6 pt-5 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
             {attestedSuccess || activeParcel.status === 'oracle_verified' || activeParcel.status === 'registered' ? (
-              <div className="text-xs text-emerald-700 font-bold flex items-center gap-1.5">
-                <CheckCircle className="w-4 h-4 text-emerald-600" />
-                <span>Customary Attestation Sealed & Verified!</span>
+              <div className="space-y-1">
+                <div className="text-xs text-emerald-700 font-bold flex items-center gap-1.5">
+                  <CheckCircle className="w-4 h-4 text-emerald-600" />
+                  <span>Customary Attestation Sealed &amp; Verified!</span>
+                </div>
+                {oracleTxHash && (
+                  <a
+                    href={getPolygonAmoyTxUrl(oracleTxHash)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-[11px] font-mono text-amber-800 underline"
+                  >
+                    <Wallet className="w-3 h-3" />
+                    <span>Polygon Amoy Tx: {oracleTxHash.slice(0, 18)}...</span>
+                  </a>
+                )}
+                {oracleChainNote && !oracleTxHash && (
+                  <div className="text-[11px] text-slate-500">{oracleChainNote}</div>
+                )}
               </div>
             ) : (
               <div className="text-xs text-slate-500">

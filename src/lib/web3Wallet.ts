@@ -70,11 +70,42 @@ declare global {
   }
 }
 
+export const POLYGON_MAINNET_CHAIN_ID_HEX = '0x89';
+export const POLYGON_MAINNET_CHAIN_ID_DEC = 137;
+
+export const POLYGON_AMOY_CHAIN_ID_HEX = '0x13882';
+export const POLYGON_AMOY_CHAIN_ID_DEC = 80002;
+
+export const POLYGON_MAINNET_PARAMS = {
+  chainId: POLYGON_MAINNET_CHAIN_ID_HEX,
+  chainName: 'Polygon Mainnet',
+  nativeCurrency: {
+    name: 'POL',
+    symbol: 'POL',
+    decimals: 18
+  },
+  rpcUrls: ['https://polygon-rpc.com', 'https://rpc-mainnet.matic.quiknode.pro'],
+  blockExplorerUrls: ['https://polygonscan.com']
+};
+
+export const POLYGON_AMOY_PARAMS = {
+  chainId: POLYGON_AMOY_CHAIN_ID_HEX,
+  chainName: 'Polygon Amoy Testnet',
+  nativeCurrency: {
+    name: 'POL',
+    symbol: 'POL',
+    decimals: 18
+  },
+  rpcUrls: ['https://rpc-amoy.polygon.technology'],
+  blockExplorerUrls: ['https://amoy.polygonscan.com']
+};
+
 const KNOWN_CHAINS: Record<number, string> = {
   1: 'Ethereum Mainnet',
   10: 'OP Mainnet',
   56: 'BNB Smart Chain',
   137: 'Polygon PoS',
+  80002: 'Polygon Amoy Testnet',
   8453: 'Base',
   42161: 'Arbitrum One',
   43114: 'Avalanche C-Chain',
@@ -84,11 +115,63 @@ const KNOWN_CHAINS: Record<number, string> = {
 
 export function getChainName(chainIdHex: string): { chainIdDecimal: number; chainName: string } {
   const parsed = Number.parseInt(chainIdHex, 16);
-  const chainIdDecimal = Number.isFinite(parsed) ? parsed : 1;
+  const chainIdDecimal = Number.isFinite(parsed) ? parsed : POLYGON_AMOY_CHAIN_ID_DEC;
   return {
     chainIdDecimal,
     chainName: KNOWN_CHAINS[chainIdDecimal] || `EVM Chain #${chainIdDecimal}`
   };
+}
+
+export async function ensurePolygonNetwork(
+  provider: EIP1193Provider,
+  target: 'amoy' | 'mainnet' = 'amoy'
+): Promise<string> {
+  const targetHex = target === 'mainnet' ? POLYGON_MAINNET_CHAIN_ID_HEX : POLYGON_AMOY_CHAIN_ID_HEX;
+  const targetDec = target === 'mainnet' ? POLYGON_MAINNET_CHAIN_ID_DEC : POLYGON_AMOY_CHAIN_ID_DEC;
+  const targetParams = target === 'mainnet' ? POLYGON_MAINNET_PARAMS : POLYGON_AMOY_PARAMS;
+  const targetLabel =
+    target === 'mainnet' ? 'Polygon PoS (Chain ID 137)' : 'Polygon Amoy Testnet (Chain ID 80002)';
+
+  try {
+    const currentChain = await provider.request({ method: 'eth_chainId' });
+    if (typeof currentChain === 'string' && Number.parseInt(currentChain, 16) === targetDec) {
+      return targetHex;
+    }
+  } catch {
+    // Proceed to switch request if eth_chainId read fails
+  }
+
+  try {
+    await provider.request({
+      method: 'wallet_switchEthereumChain',
+      params: [{ chainId: targetHex }]
+    });
+    return targetHex;
+  } catch (switchErr) {
+    const errObj = switchErr as { code?: number; data?: { originalError?: { code?: number } }; message?: string };
+    const code = errObj?.code ?? errObj?.data?.originalError?.code;
+    const msg = typeof errObj?.message === 'string' ? errObj.message.toLowerCase() : '';
+
+    if (code === 4001) {
+      throw new Error(`Please approve switching your wallet to ${targetLabel} to continue.`);
+    }
+
+    if (code === 4902 || msg.includes('unrecognized chain') || msg.includes('not been added')) {
+      await provider.request({
+        method: 'wallet_addEthereumChain',
+        params: [targetParams]
+      });
+      await provider
+        .request({
+          method: 'wallet_switchEthereumChain',
+          params: [{ chainId: targetHex }]
+        })
+        .catch(() => undefined);
+      return targetHex;
+    }
+
+    throw switchErr;
+  }
 }
 
 export function inferInjectedWalletName(provider: EIP1193Provider): string {
@@ -271,7 +354,10 @@ export function formatWalletError(err: unknown): string {
   return errorObj?.message || 'Unable to connect to your Web3 wallet.';
 }
 
-export async function connectWeb3Wallet(wallet: DiscoveredWallet): Promise<ConnectedWalletResult> {
+export async function connectWeb3Wallet(
+  wallet: DiscoveredWallet,
+  options?: { enforcePolygon?: boolean; targetNetwork?: 'amoy' | 'mainnet' }
+): Promise<ConnectedWalletResult> {
   const accountsResult = await wallet.provider.request({
     method: 'eth_requestAccounts'
   });
@@ -284,14 +370,20 @@ export async function connectWeb3Wallet(wallet: DiscoveredWallet): Promise<Conne
     throw new Error('No wallet account was authorized.');
   }
 
-  let chainIdHex = '0x1';
+  const targetNetwork = options?.targetNetwork ?? 'amoy';
+  let chainIdHex =
+    targetNetwork === 'mainnet' ? POLYGON_MAINNET_CHAIN_ID_HEX : POLYGON_AMOY_CHAIN_ID_HEX;
+  if (options?.enforcePolygon !== false) {
+    chainIdHex = await ensurePolygonNetwork(wallet.provider, targetNetwork);
+  }
+
   try {
     const chainResult = await wallet.provider.request({ method: 'eth_chainId' });
     if (typeof chainResult === 'string' && chainResult.startsWith('0x')) {
       chainIdHex = chainResult;
     }
   } catch {
-    // Fallback to 0x1 when chain query is unsupported
+    // Keep Polygon chain ID when chain query is unsupported
   }
 
   const { chainIdDecimal, chainName } = getChainName(chainIdHex);
@@ -360,6 +452,8 @@ export function truncateAddress(address: string): string {
 }
 
 export const ETH_USD_REFERENCE_RATE = 3200;
+export const POL_USD_REFERENCE_RATE = 0.45;
+export const ANAGU_USD_REFERENCE_RATE = 1;
 
 export function cleanInvisibleChars(raw: string): string {
   return raw
@@ -428,7 +522,7 @@ export function validateSellerWallet(raw: string): WalletValidationResult {
       valid: true,
       normalized: evmNormalized,
       kind: 'evm',
-      label: 'Valid EVM Wallet (Ethereum / Polygon / Base / BNB)'
+      label: 'Valid Polygon / EVM Wallet (Polygon Amoy · 0x)'
     };
   }
 
@@ -528,16 +622,31 @@ export function usdToEthString(usdAmount: number, ethPriceUsd = ETH_USD_REFERENC
   return eth.toFixed(6).replace(/\.?0+$/, '');
 }
 
+export function usdToPolString(usdAmount: number, polPriceUsd = POL_USD_REFERENCE_RATE): string {
+  if (!Number.isFinite(usdAmount) || usdAmount <= 0 || polPriceUsd <= 0) return '0';
+  const pol = usdAmount / polPriceUsd;
+  return pol.toFixed(4).replace(/\.?0+$/, '');
+}
+
+export function usdToAnaguString(
+  usdAmount: number,
+  anaguPriceUsd = ANAGU_USD_REFERENCE_RATE
+): string {
+  if (!Number.isFinite(usdAmount) || usdAmount <= 0 || anaguPriceUsd <= 0) return '0';
+  const anagu = usdAmount / anaguPriceUsd;
+  return anagu.toFixed(2).replace(/\.?0+$/, '');
+}
+
 export function ethToWeiHex(ethAmountStr: string): string {
   const cleaned = ethAmountStr.trim();
   if (!/^\d+(\.\d+)?$/.test(cleaned)) {
-    throw new Error('Enter a valid positive ETH payment amount.');
+    throw new Error('Enter a valid positive payment amount.');
   }
   const [wholePart, fracPartRaw = ''] = cleaned.split('.');
   const fracPadded = (fracPartRaw + '000000000000000000').slice(0, 18);
   const wei = BigInt(wholePart) * 10n ** 18n + BigInt(fracPadded);
   if (wei <= 0n) {
-    throw new Error('Payment amount must be greater than 0 ETH.');
+    throw new Error('Payment amount must be greater than 0.');
   }
   return '0x' + wei.toString(16);
 }
@@ -547,11 +656,13 @@ export async function sendPaymentToSellerWallet(params: {
   fromAccount: string;
   toSellerWallet: string;
   ethAmount: string;
+  targetNetwork?: 'amoy' | 'mainnet';
 }): Promise<{ txHash: string }> {
   const recipient = normalizeEvmAddress(params.toSellerWallet);
   if (!isValidEvmAddress(recipient)) {
-    throw new Error('Direct on-chain ETH transfer requires a valid 0x... EVM seller wallet address.');
+    throw new Error('Direct on-chain POL transfer requires a valid 0x... Polygon seller wallet address.');
   }
+  await ensurePolygonNetwork(params.provider, params.targetNetwork ?? 'amoy');
   const valueHex = ethToWeiHex(params.ethAmount);
   const txHash = await params.provider.request({
     method: 'eth_sendTransaction',
@@ -588,7 +699,7 @@ export function getMobileWalletDeepLinks(targetUrl?: string): MobileWalletDeepLi
       id: 'trust',
       name: 'Trust Wallet',
       subtitle: 'Open in Trust Wallet',
-      href: `https://link.trustwallet.com/open_url?coin_id=60&url=${encodedUrl}`,
+      href: `https://link.trustwallet.com/open_url?coin_id=966&url=${encodedUrl}`,
       accentClass: 'border-sky-500/40 bg-sky-950/30 hover:bg-sky-900/40 text-sky-200'
     },
     {

@@ -11,10 +11,24 @@ import {
   Lock, 
   FileText,
   Boxes,
-  Printer
+  Printer,
+  Wallet
 } from 'lucide-react';
 import { ParcelRecord } from '../../types/anagu';
 import { ASSET_IMAGES } from '../../data/mockData';
+import {
+  getContractConfig,
+  getPolygonAmoyAddressUrl,
+  getPolygonAmoyTxUrl
+} from '../../config/contracts';
+import {
+  connectWeb3Wallet,
+  discoverWalletsOnce,
+  formatWalletError,
+  isValidEvmAddress,
+  truncateAddress
+} from '../../lib/web3Wallet';
+import { mintLandTitleNftOnChain } from '../../lib/anaguContracts';
 
 interface Props {
   parcels: ParcelRecord[];
@@ -29,17 +43,45 @@ export const ScreenRegistrarConsole: React.FC<Props> = ({
 }) => {
   const [selectedParcelId, setSelectedParcelId] = useState<string>(parcels[1]?.id || parcels[0]?.id);
   const [isMinting, setIsMinting] = useState<boolean>(false);
-  const [mintSuccess, setMintSuccess] = useState<boolean>(false);
+  const [mintError, setMintError] = useState<string | null>(null);
   const [showCertificateModal, setShowCertificateModal] = useState<boolean>(false);
+  const contractConfig = getContractConfig();
 
   const activeParcel = parcels.find(p => p.id === selectedParcelId) || parcels[0];
 
-  const handleExecuteMint = () => {
+  const handleExecuteMint = async () => {
     setIsMinting(true);
-    setTimeout(() => {
-      const newTokenId = activeParcel.tokenId || Math.floor(4090 + Math.random() * 50);
-      const newTxHash = activeParcel.txHash || ('0x' + Array.from({length: 64}, () => Math.floor(Math.random()*16).toString(16)).join(''));
-      
+    setMintError(null);
+
+    try {
+      let newTokenId = activeParcel.tokenId || Math.floor(4090 + Math.random() * 50);
+      let newTxHash = activeParcel.txHash || '';
+
+      if (contractConfig.landTitleNftAddress && activeParcel.sellerWallet && isValidEvmAddress(activeParcel.sellerWallet)) {
+        const wallets = await discoverWalletsOnce(150);
+        if (wallets.length > 0) {
+          const connected = await connectWeb3Wallet(wallets[0], {
+            enforcePolygon: true,
+            targetNetwork: 'amoy'
+          });
+          const minted = await mintLandTitleNftOnChain({
+            provider: connected.provider,
+            recipient: activeParcel.sellerWallet,
+            parcelId: activeParcel.id,
+            cadastralRef: activeParcel.cadastralRef,
+            spatialHash: activeParcel.spatialHash,
+            documentHash: activeParcel.documentHash
+          });
+          newTokenId = minted.tokenId || newTokenId;
+          newTxHash = minted.txHash;
+        }
+      }
+
+      if (!newTxHash) {
+        newTxHash =
+          '0x' + Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+      }
+
       onMintTitle(activeParcel.id, newTokenId, newTxHash);
       onEmitMqtt('land/title/issued', {
         tokenId: newTokenId,
@@ -49,10 +91,11 @@ export const ScreenRegistrarConsole: React.FC<Props> = ({
         cadastralRef: activeParcel.cadastralRef,
         timestamp: new Date().toISOString()
       });
-
+    } catch (err) {
+      setMintError(formatWalletError(err));
+    } finally {
       setIsMinting(false);
-      setMintSuccess(true);
-    }, 1000);
+    }
   };
 
   const isAlreadyRegistered = activeParcel.status === 'registered' || activeParcel.status === 'revoked';
@@ -66,12 +109,14 @@ export const ScreenRegistrarConsole: React.FC<Props> = ({
             <Building2 className="w-5 h-5" />
           </div>
           <div>
-            <div className="text-base font-bold text-white tracking-tight flex items-center gap-2">
-              Registrar of Deeds & Hyperledger Besu Console
-              <span className="text-xs font-mono font-normal text-emerald-400">Besu QBFT Consensus · ChainID: 13371</span>
+            <div className="text-base font-bold text-white tracking-tight flex flex-wrap items-center gap-2">
+              Registrar of Deeds &amp; Polygon Amoy NFT Console
+              <span className="text-xs font-mono font-normal text-emerald-400">
+                Polygon Amoy Testnet · ChainID: 80002
+              </span>
             </div>
             <div className="text-xs text-slate-400">
-              ERC-721 LandTitleNFT Issuance & Registry-Controlled State Machine
+              ERC-721 AnaguLandTitleNFT Issuance &amp; AnaguToken Escrow Settlement Console
             </div>
           </div>
         </div>
@@ -156,34 +201,56 @@ export const ScreenRegistrarConsole: React.FC<Props> = ({
 
           {/* Smart Contract Interaction Box */}
           <div className="bg-slate-900 rounded-xl p-5 border border-slate-800 space-y-4">
-            <div className="flex items-center justify-between text-xs pb-3 border-b border-slate-800">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs pb-3 border-b border-slate-800">
               <div className="flex items-center gap-2 text-slate-300 font-semibold uppercase tracking-wider">
                 <Cpu className="w-4 h-4 text-emerald-400" />
-                Hyperledger Besu Smart Contract Call: LandRegistry.sol
+                Polygon Amoy Smart Contract Call: AnaguLandTitleNFT.sol
               </div>
-              <span className="text-[11px] font-mono text-slate-400">Gas Estimated: 184,210 gas</span>
+              {contractConfig.landTitleNftAddress ? (
+                <a
+                  href={getPolygonAmoyAddressUrl(contractConfig.landTitleNftAddress)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-[11px] font-mono text-emerald-400 hover:underline"
+                >
+                  <Wallet className="w-3 h-3" />
+                  <span>{truncateAddress(contractConfig.landTitleNftAddress)}</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              ) : (
+                <span className="text-[11px] font-mono text-amber-300">
+                  Contract awaiting Amoy deployment
+                </span>
+              )}
             </div>
 
             <div className="font-mono text-xs bg-slate-950 p-3.5 rounded-lg border border-slate-800 text-slate-300 space-y-1">
-              <div className="text-slate-500">// LandRegistry.sol — Registrar Controlled Minting</div>
+              <div className="text-slate-500">// AnaguLandTitleNFT.sol — Registrar Controlled Minting (Polygon Amoy 80002)</div>
               <div className="text-emerald-400">
-                function mintTitleDeed(
+                function mintTitle(
               </div>
               <div className="pl-4 text-slate-300">
-                address to: <span className="text-amber-300">0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC</span>,<br />
-                bytes32 spatialHash: <span className="text-emerald-300">"{activeParcel.spatialHash.slice(0, 32)}..."</span>,<br />
-                string cadastralRef: <span className="text-amber-300">"{activeParcel.cadastralRef}"</span>,<br />
-                bytes32 surveyPlanHash: <span className="text-purple-300">"{activeParcel.documentHash.slice(0, 32)}..."</span>
+                address recipient: <span className="text-amber-300">{activeParcel.sellerWallet || '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC'}</span>,<br />
+                string parcelId: <span className="text-sky-300">&quot;{activeParcel.id}&quot;</span>,<br />
+                string cadastralRef: <span className="text-amber-300">&quot;{activeParcel.cadastralRef}&quot;</span>,<br />
+                bytes32 spatialHash: <span className="text-emerald-300">&quot;{activeParcel.spatialHash.slice(0, 32)}...&quot;</span>,<br />
+                bytes32 documentHash: <span className="text-purple-300">&quot;{activeParcel.documentHash.slice(0, 32)}...&quot;</span>
               </div>
               <div className="text-emerald-400">
                 ) external onlyRole(REGISTRAR_ROLE) returns (uint256 tokenId);
               </div>
             </div>
 
+            {mintError && (
+              <div className="text-xs text-amber-300 bg-amber-950/40 border border-amber-500/40 rounded-lg px-3 py-2">
+                {mintError}
+              </div>
+            )}
+
             {/* Mint Action Bar */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-2">
               <div className="text-xs text-slate-400">
-                Registry controls all transfers. Direct peer-to-peer ERC-721 transfers are blocked by contract invariants.
+                Registry controls all transfers via <code className="font-mono text-emerald-300">registryTransfer()</code>. Direct peer-to-peer ERC-721 transfers are blocked by contract invariants.
               </div>
 
               <div className="flex items-center gap-3">
@@ -198,14 +265,14 @@ export const ScreenRegistrarConsole: React.FC<Props> = ({
                 )}
 
                 <button
-                  onClick={handleExecuteMint}
+                  onClick={() => void handleExecuteMint()}
                   disabled={isMinting || isAlreadyRegistered}
                   className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-500 text-white font-semibold text-xs rounded-xl shadow-sm transition-all flex items-center gap-2"
                 >
                   {isMinting ? (
                     <>
                       <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                      Submitting to Besu QBFT...
+                      Minting on Polygon Amoy...
                     </>
                   ) : isAlreadyRegistered ? (
                     <>
@@ -215,7 +282,7 @@ export const ScreenRegistrarConsole: React.FC<Props> = ({
                   ) : (
                     <>
                       <Key className="w-4 h-4" />
-                      Execute Besu Title Minting
+                      Execute Polygon Amoy Title Mint
                     </>
                   )}
                 </button>
@@ -254,9 +321,22 @@ export const ScreenRegistrarConsole: React.FC<Props> = ({
               </div>
             </div>
 
-            <div className="text-xs font-mono bg-slate-900 p-3 rounded-lg border border-slate-800 text-slate-300 break-all">
-              <span className="text-slate-500">Transaction Hash: </span>
-              <span className="text-emerald-400">{activeParcel.txHash}</span>
+            <div className="text-xs font-mono bg-slate-900 p-3 rounded-lg border border-slate-800 text-slate-300 break-all flex items-center justify-between gap-2">
+              <div>
+                <span className="text-slate-500">Transaction Hash: </span>
+                <span className="text-emerald-400">{activeParcel.txHash}</span>
+              </div>
+              {activeParcel.txHash && (
+                <a
+                  href={getPolygonAmoyTxUrl(activeParcel.txHash)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-emerald-400 hover:underline shrink-0"
+                >
+                  <span>Polygonscan</span>
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+              )}
             </div>
           </div>
         )}

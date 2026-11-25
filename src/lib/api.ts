@@ -154,6 +154,8 @@ async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
     if (!response.ok) {
       const serverErrorMsg = (data as { error?: string })?.error;
       const isParcelNotFound = response.status === 404 && serverErrorMsg === 'Parcel not found.';
+      const hasJsonServerError =
+        isJson && typeof serverErrorMsg === 'string' && serverErrorMsg.trim().length > 0;
       const isMigrationRequired =
         response.status === 503 &&
         Boolean((data as { migrationRequired?: boolean })?.migrationRequired);
@@ -162,9 +164,8 @@ async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
         !isMigrationRequired &&
         (response.status === 404 ||
           response.status === 405 ||
-          response.status === 502 ||
-          response.status === 503 ||
-          response.status === 504 ||
+          (!hasJsonServerError &&
+            (response.status === 502 || response.status === 503 || response.status === 504)) ||
           !isJson);
 
       if (unavailable) {

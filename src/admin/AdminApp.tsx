@@ -69,6 +69,7 @@ import {
 } from '../lib/adminApi';
 import { auth } from '../lib/firebase';
 import { FirebaseDomainHelpBanner } from '../components/FirebaseDomainHelpBanner';
+import { PolygonAmoyContractsPanel } from '../components/PolygonAmoyContractsPanel';
 import {
   addAuthorizedAdminEmail,
   adminDeleteInquiryInFirestore,
@@ -1540,6 +1541,19 @@ export const AdminApp: React.FC = () => {
         {/* TAB 1: OVERVIEW */}
         {activeTab === 'overview' && (
           <div className="space-y-6">
+            <PolygonAmoyContractsPanel
+              parcels={parcels}
+              onParcelMinted={(parcelId, tokenId, txHash) => {
+                setParcels((prev) =>
+                  prev.map((p) =>
+                    p.id === parcelId
+                      ? { ...p, tokenId, txHash, status: 'registered' }
+                      : p
+                  )
+                );
+              }}
+            />
+
             <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
               <button
                 type="button"

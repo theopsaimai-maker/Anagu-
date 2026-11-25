@@ -1,0 +1,15 @@
+{
+  "network": "Polygon Amoy Testnet",
+  "chainId": 80002,
+  "chainIdHex": "0x13882",
+  "rpcUrl": "https://rpc-amoy.polygon.technology",
+  "explorerUrl": "https://amoy.polygonscan.com",
+  "deployedAt": "",
+  "deployer": "",
+  "anaguTokenAddress": "",
+  "anaguTokenDeployTxHash": "",
+  "landTitleNftAddress": "",
+  "landTitleNftDeployTxHash": "",
+  "registrationFeeAnagu": "50",
+  "testnetFaucetEnabled": true
+}

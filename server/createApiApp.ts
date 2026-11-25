@@ -15,7 +15,6 @@ import {
   isSigningSecretConfigured,
   signAdminToken,
   signUserToken,
-  validateAuthConfig,
   verifyAdminInviteCode,
   verifyAdminToken,
   verifyUserToken
@@ -133,7 +132,14 @@ function extractBearerToken(req: express.Request): string {
 }
 
 export function attachApiRoutes(app: express.Express): void {
-  validateAuthConfig();
+  // Never crash the entire server/serverless function on boot if AUTH_TOKEN_SECRET is not yet
+  // configured in production — public read endpoints (/api/health, /api/parcels) and Firebase
+  // Google Auth remain operational while Express token verification & signing strictly fail closed.
+  if (!isSigningSecretConfigured()) {
+    console.warn(
+      '[anagu/auth] AUTH_TOKEN_SECRET is not configured for production. Public endpoints and Firebase Auth remain available; Express password login/signup will require AUTH_TOKEN_SECRET (32+ chars).'
+    );
+  }
   app.disable('x-powered-by');
   app.use(express.json({ limit: '4mb' }));
 
@@ -276,6 +282,12 @@ export function attachApiRoutes(app: express.Express): void {
       ) {
         return res.status(400).json({ error: 'Valid email and password are required.' });
       }
+      if (!isSigningSecretConfigured()) {
+        return res.status(503).json({
+          error:
+            'Server signing secret is not configured yet. Add a 32+ character AUTH_TOKEN_SECRET in your hosting Environment Variables (e.g. Vercel → Settings → Environment Variables) and redeploy, or use Continue with Google.'
+        });
+      }
       const result = await loginUser(email, password);
       if (result.error || !result.user) {
         return res.status(401).json({ error: result.error || 'Authentication failed.' });
@@ -318,6 +330,12 @@ export function attachApiRoutes(app: express.Express): void {
       ) {
         return res.status(400).json({
           error: 'Valid name, email, phone, credential ID, and password (6–256 chars) are required.'
+        });
+      }
+      if (!isSigningSecretConfigured()) {
+        return res.status(503).json({
+          error:
+            'Server signing secret is not configured yet. Add a 32+ character AUTH_TOKEN_SECRET in your hosting Environment Variables (e.g. Vercel → Settings → Environment Variables) and redeploy, or use Continue with Google.'
         });
       }
       const result = await signupUser({
@@ -806,6 +824,13 @@ export function attachApiRoutes(app: express.Express): void {
               .json({ error: 'Valid full name, email, phone, and password (8–256 chars) are required.' });
           }
 
+          if (!isSigningSecretConfigured()) {
+            return res.status(503).json({
+              error:
+                'Server signing secret is not configured yet. Add a 32+ character AUTH_TOKEN_SECRET in your hosting Environment Variables (e.g. Vercel → Settings → Environment Variables) and redeploy, or use Sign In with Google.'
+            });
+          }
+
           const result = await signupAdmin({
             fullName,
             email,
@@ -835,6 +860,12 @@ export function attachApiRoutes(app: express.Express): void {
           .status(400)
           .json({ error: 'Valid full name, email, phone, and password (8–256 chars) are required.' });
       }
+      if (!isSigningSecretConfigured()) {
+        return res.status(503).json({
+          error:
+            'Server signing secret is not configured yet. Add a 32+ character AUTH_TOKEN_SECRET in your hosting Environment Variables (e.g. Vercel → Settings → Environment Variables) and redeploy, or use Sign In with Google.'
+        });
+      }
       const result = await signupAdmin({
         fullName,
         email,
@@ -858,7 +889,7 @@ export function attachApiRoutes(app: express.Express): void {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('[anagu/admin] Signup error:', msg);
       if (msg.includes('AUTH_TOKEN_SECRET') || msg.includes('ADMIN_TOKEN_SECRET')) {
-        return res.status(500).json({
+        return res.status(503).json({
           error:
             'Server signing secret is not configured yet. Add a 32+ character AUTH_TOKEN_SECRET in your hosting Environment Variables (e.g. Vercel → Settings → Environment Variables) and redeploy, or use Sign In with Google.'
         });
@@ -882,6 +913,12 @@ export function attachApiRoutes(app: express.Express): void {
       ) {
         return res.status(400).json({ error: 'Valid email and password are required.' });
       }
+      if (!isSigningSecretConfigured()) {
+        return res.status(503).json({
+          error:
+            'Server signing secret is not configured yet. Add a 32+ character AUTH_TOKEN_SECRET in your hosting Environment Variables (e.g. Vercel → Settings → Environment Variables) and redeploy, or use Sign In with Google.'
+        });
+      }
       const result = await loginAdmin(email, password);
       if (result.error || !result.admin) {
         return res.status(401).json({ error: result.error || 'Invalid admin credentials.' });
@@ -892,7 +929,7 @@ export function attachApiRoutes(app: express.Express): void {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('[anagu/admin] Login error:', msg);
       if (msg.includes('AUTH_TOKEN_SECRET') || msg.includes('ADMIN_TOKEN_SECRET')) {
-        return res.status(500).json({
+        return res.status(503).json({
           error:
             'Server signing secret is not configured yet. Add a 32+ character AUTH_TOKEN_SECRET in your hosting Environment Variables (e.g. Vercel → Settings → Environment Variables) and redeploy, or use Sign In with Google.'
         });

@@ -2,11 +2,12 @@
   "name": "anagu-contracts",
   "version": "1.0.0",
   "private": true,
-  "description": "ANAGU ERC-721 Land Title NFT smart contracts for Hyperledger Besu QBFT (Chain ID 13371)",
+  "description": "ANAGU ERC-20 Token & ERC-721 Land Title NFT smart contracts for Polygon Amoy Testnet (80002) and Hyperledger Besu QBFT (13371)",
   "scripts": {
     "compile": "hardhat compile",
     "test": "hardhat test",
     "export-abi": "tsx scripts/export-abi.ts",
+    "deploy:amoy": "hardhat run scripts/deploy-amoy.ts --network polygonAmoy",
     "clean": "hardhat clean"
   },
   "dependencies": {
